@@ -75,6 +75,7 @@ export interface PerformanceAlertRecord extends FieldSet {
 
 export interface MedicontentPost extends FieldSet {
     id: string;
+    postId?: string;
     title: string;
     type: '유입 포스팅' | '전환 포스팅';
     status: '대기' | '병원 작업 중' | '리걸케어 작업 중' | '작업 완료' | '자료 제공 필요' | '초안 검토 필요';
@@ -103,7 +104,6 @@ export interface PostDataRequest extends FieldSet {
     beforeImagesText?: string;
     processImagesText?: string;
     afterImagesText?: string;
-    submittedAt: string;
     status: '대기' | '처리 중' | '완료';
 }
 
@@ -418,6 +418,10 @@ const AIRTABLE_API_KEY = process.env.NEXT_PUBLIC_AIRTABLE_API_KEY;
 const AIRTABLE_BASE_ID = process.env.NEXT_PUBLIC_AIRTABLE_BASE_ID;
 
 if (!AIRTABLE_API_KEY || !AIRTABLE_BASE_ID) {
+    console.error('❌ Airtable 환경변수 누락:', {
+        AIRTABLE_API_KEY: AIRTABLE_API_KEY ? '설정됨' : '누락',
+        AIRTABLE_BASE_ID: AIRTABLE_BASE_ID ? '설정됨' : '누락'
+    });
     throw new Error('Airtable API 키와 Base ID가 필요합니다.');
 }
 
@@ -576,6 +580,7 @@ export class AirtableService {
             const records = await base('Medicontent Posts').select().all();
                     return records.map(record => ({
             id: record.id,
+            postId: record.get('Post Id') as string,
             title: record.get('Title') as string,
             type: record.get('Type') as '유입 포스팅' | '전환 포스팅',
             status: record.get('Status') as any,
@@ -597,9 +602,129 @@ export class AirtableService {
 
     static async getPost(id: string): Promise<MedicontentPost | null> {
         try {
-            const record = await base('Medicontent Posts').find(id);
+            // ID 형식에 따라 다른 방식으로 조회
+            if (id.startsWith('post_')) {
+                // post_ 접두사가 있으면 Post Id 필드로 검색
+                const records = await base('Medicontent Posts')
+                    .select({
+                        filterByFormula: `{Post Id} = '${id}'`,
+                        maxRecords: 1,
+                    })
+                    .all();
+                
+                if (records.length === 0) {
+                    return null;
+                }
+                
+                const record = records[0];
+                return {
+                    id: record.id,
+                    postId: record.get('Post Id') as string,
+                    title: record.get('Title') as string,
+                    type: record.get('Type') as '유입 포스팅' | '전환 포스팅',
+                    status: record.get('Status') as any,
+                    publishDate: record.get('Publish Date') as string,
+                    keywords: (record.get('Keywords') as string || '').split(', ').filter(k => k.trim()),
+                    treatmentType: record.get('Treatment Type') as string,
+                    htmlId: record.get('HTML ID') as string,
+                    content: record.get('Content') as string,
+                    seoScore: record.get('SEO Score') as number,
+                    legalScore: record.get('Legal Score') as number,
+                    createdAt: record.get('Created At') as string,
+                    updatedAt: record.get('Updated At') as string,
+                };
+            } else if (id.startsWith('rec')) {
+                // record ID 형식이면 post_ 접두사를 붙여서 Post Id 필드로 검색
+                const fullPostId = `post_${id}`;
+                
+                const records = await base('Medicontent Posts')
+                    .select({
+                        filterByFormula: `{Post Id} = '${fullPostId}'`,
+                        maxRecords: 1,
+                    })
+                    .all();
+                
+                if (records.length > 0) {
+                    const record = records[0];
+                    return {
+                        id: record.id,
+                        postId: record.get('Post Id') as string,
+                        title: record.get('Title') as string,
+                        type: record.get('Type') as '유입 포스팅' | '전환 포스팅',
+                        status: record.get('Status') as any,
+                        publishDate: record.get('Publish Date') as string,
+                        keywords: (record.get('Keywords') as string || '').split(', ').filter(k => k.trim()),
+                        treatmentType: record.get('Treatment Type') as string,
+                        htmlId: record.get('HTML ID') as string,
+                        content: record.get('Content') as string,
+                        seoScore: record.get('SEO Score') as number,
+                        legalScore: record.get('Legal Score') as number,
+                        createdAt: record.get('Created At') as string,
+                        updatedAt: record.get('Updated At') as string,
+                    };
+                } else {
+                    // post_ 접두사 형식으로 찾지 못하면 원본 record ID로 직접 조회
+                    const record = await base('Medicontent Posts').find(id);
+                    return {
+                        id: record.id,
+                        postId: record.get('Post Id') as string,
+                        title: record.get('Title') as string,
+                        type: record.get('Type') as '유입 포스팅' | '전환 포스팅',
+                        status: record.get('Status') as any,
+                        publishDate: record.get('Publish Date') as string,
+                        keywords: (record.get('Keywords') as string || '').split(', ').filter(k => k.trim()),
+                        treatmentType: record.get('Treatment Type') as string,
+                        htmlId: record.get('HTML ID') as string,
+                        content: record.get('Content') as string,
+                        seoScore: record.get('SEO Score') as number,
+                        legalScore: record.get('Legal Score') as number,
+                        createdAt: record.get('Created At') as string,
+                        updatedAt: record.get('Updated At') as string,
+                    };
+                }
+            } else {
+                // 다른 형식이면 직접 record ID로 조회
+                const record = await base('Medicontent Posts').find(id);
+                return {
+                    id: record.id,
+                    postId: record.get('Post Id') as string,
+                    title: record.get('Title') as string,
+                    type: record.get('Type') as '유입 포스팅' | '전환 포스팅',
+                    status: record.get('Status') as any,
+                    publishDate: record.get('Publish Date') as string,
+                    keywords: (record.get('Keywords') as string || '').split(', ').filter(k => k.trim()),
+                    treatmentType: record.get('Treatment Type') as string,
+                    htmlId: record.get('HTML ID') as string,
+                    content: record.get('Content') as string,
+                    seoScore: record.get('SEO Score') as number,
+                    legalScore: record.get('Legal Score') as number,
+                    createdAt: record.get('Created At') as string,
+                    updatedAt: record.get('Updated At') as string,
+                };
+            }
+        } catch (error) {
+            console.error('포스트 조회 실패:', error);
+            return null;
+        }
+    }
+
+    static async getPostByPostId(postId: string): Promise<MedicontentPost | null> {
+        try {
+            const records = await base('Medicontent Posts')
+                .select({
+                    filterByFormula: `{Post Id} = '${postId}'`,
+                    maxRecords: 1,
+                })
+                .all();
+
+            if (records.length === 0) {
+                return null;
+            }
+            
+            const record = records[0];
             return {
                 id: record.id,
+                postId: record.get('Post Id') as string,
                 title: record.get('Title') as string,
                 type: record.get('Type') as '유입 포스팅' | '전환 포스팅',
                 status: record.get('Status') as any,
@@ -614,7 +739,7 @@ export class AirtableService {
                 updatedAt: record.get('Updated At') as string,
             };
         } catch (error) {
-            console.error('포스트 조회 실패:', error);
+            console.error('포스트 조회 실패 (by postId):', error);
             return null;
         }
     }
@@ -622,14 +747,19 @@ export class AirtableService {
     static async updatePostStatus(id: string, status: string): Promise<void> {
         try {
             await base('Medicontent Posts').update(id, {
-                'Status': status,
-                'Updated At': new Date().toISOString()
+                'Status': status
+                // 'Updated At'은 Airtable에서 자동으로 관리되므로 제거
             });
-  } catch (error) {
-            console.error('포스트 상태 업데이트 실패:', error);
-    throw error;
-  }
-}
+        } catch (error) {
+            console.error('포스트 상태 업데이트 실패:', {
+                id,
+                status,
+                error: error instanceof Error ? error.message : error,
+                stack: error instanceof Error ? error.stack : undefined
+            });
+            throw error;
+        }
+    }
 
     static async updatePost(id: string, updateData: any): Promise<void> {
         try {
@@ -641,23 +771,90 @@ export class AirtableService {
     }
 
     // 자료 요청 관련 메서드
+    static async getDataRequestById(recordId: string): Promise<PostDataRequest | null> {
+        try {
+            const record = await base('Post Data Requests').find(recordId);
+            
+            return {
+                id: record.id,
+                postId: record.get('Post ID') as string,
+                conceptMessage: (record.get('Concept Message') as string) || '',
+                patientCondition: (record.get('Patient Condition') as string) || '',
+                treatmentProcessMessage: (record.get('Treatment Process Message') as string) || '',
+                treatmentResultMessage: (record.get('Treatment Result Message') as string) || '',
+                additionalMessage: (record.get('Additional Message') as string) || '',
+                beforeImages: (record.get('Before Images') as Attachment[]) || [],
+                processImages: (record.get('Process Images') as Attachment[]) || [],
+                afterImages: (record.get('After Images') as Attachment[]) || [],
+                beforeImagesText: (record.get('Before Images Texts') as string) || '',
+                processImagesText: (record.get('Process Images Texts') as string) || '',
+                afterImagesText: (record.get('After Images Texts') as string) || '',
+                submittedAt: record.get('Submitted At') as string,
+                status: record.get('Status') as any,
+            };
+        } catch (error) {
+            console.error('자료 요청 조회 실패 (by ID):', error);
+            return null;
+        }
+    }
+
     static async getDataRequest(postId: string): Promise<PostDataRequest | null> {
         try {
+            let searchPostId = postId;
+            
+            // ID 형식에 따라 검색할 postId 조정
+            if (postId.startsWith('rec') && !postId.startsWith('post_')) {
+                // record ID 형식이면 post_ 접두사 추가
+                searchPostId = `post_${postId}`;
+            }
+            
             const records = await base('Post Data Requests')
                 .select({
-                    filterByFormula: `{Post ID} = '${postId}'`,
+                    filterByFormula: `{Post Id} = '${searchPostId}'`,
                     maxRecords: 1,
                 })
                 .all();
 
             if (records.length === 0) {
+                // post_ 접두사가 붙은 형식으로 찾지 못하면 원본 postId로 재시도
+                if (searchPostId !== postId) {
+                    const fallbackRecords = await base('Post Data Requests')
+                        .select({
+                            filterByFormula: `{Post Id} = '${postId}'`,
+                            maxRecords: 1,
+                        })
+                        .all();
+                    
+                    if (fallbackRecords.length === 0) {
+                        return null;
+                    }
+                    
+                    const record = fallbackRecords[0];
+                    return {
+                        id: record.id,
+                        postId: record.get('Post ID') as string,
+                        conceptMessage: (record.get('Concept Message') as string) || '',
+                        patientCondition: (record.get('Patient Condition') as string) || '',
+                        treatmentProcessMessage: (record.get('Treatment Process Message') as string) || '',
+                        treatmentResultMessage: (record.get('Treatment Result Message') as string) || '',
+                        additionalMessage: (record.get('Additional Message') as string) || '',
+                        beforeImages: (record.get('Before Images') as Attachment[]) || [],
+                        processImages: (record.get('Process Images') as Attachment[]) || [],
+                        afterImages: (record.get('After Images') as Attachment[]) || [],
+                        beforeImagesText: (record.get('Before Images Texts') as string) || '',
+                        processImagesText: (record.get('Process Images Texts') as string) || '',
+                        afterImagesText: (record.get('After Images Texts') as string) || '',
+                        submittedAt: record.get('Submitted At') as string,
+                        status: record.get('Status') as any,
+                    };
+                }
                 return null;
             }
             
             const record = records[0];
 
             return {
-    id: record.id,
+                id: record.id,
                 postId: record.get('Post ID') as string,
                 conceptMessage: (record.get('Concept Message') as string) || '',
                 patientCondition: (record.get('Patient Condition') as string) || '',
@@ -683,7 +880,7 @@ export class AirtableService {
         try {
             const records = await base('Post Data Requests')
                 .select({
-                    filterByFormula: `{Post ID} = '${postId}'`,
+                    filterByFormula: `{Post Id} = '${postId}'`,
                     maxRecords: 1,
                 })
                 .all();
@@ -692,7 +889,8 @@ export class AirtableService {
                 return records[0].id;
             } else {
                 const newRecord = await base('Post Data Requests').create({
-                    'Post ID': postId,
+                    'Post Id': postId, // 직접 받은 record ID (recXXXXX)
+                    'Post ID': postId, // 같은 record ID 저장 (단순화)
                     'Status': '병원 작업 중',
                 });
                 return newRecord.id;
@@ -703,12 +901,18 @@ export class AirtableService {
         }
     }
 
-    static async submitDataRequest(data: Omit<PostDataRequest, 'id' | 'submittedAt' | 'status' | 'beforeImages' | 'processImages' | 'afterImages'>): Promise<void> {
+    static async submitDataRequest(data: Omit<PostDataRequest, 'id' | 'submittedAt' | 'status' | 'beforeImages' | 'processImages' | 'afterImages'>): Promise<any> {
         try {
-            console.log('AirtableService.submitDataRequest 호출:', data);
+            console.log('🔄 AirtableService.submitDataRequest 호출:', data);
+            
+            // 환경변수 확인 로그
+            console.log('🔑 환경변수 상태:', {
+                AIRTABLE_API_KEY: AIRTABLE_API_KEY ? `설정됨 (길이: ${AIRTABLE_API_KEY.length})` : '누락',
+                AIRTABLE_BASE_ID: AIRTABLE_BASE_ID ? `설정됨 (길이: ${AIRTABLE_BASE_ID.length})` : '누락'
+            });
             
             const recordData = {
-                'Post ID': data.postId,
+                'Post Id': data.postId, // 직접 받은 record ID (recXXXXX)
                 'Concept Message': data.conceptMessage,
                 'Patient Condition': data.patientCondition,
                 'Treatment Process Message': data.treatmentProcessMessage,
@@ -717,17 +921,33 @@ export class AirtableService {
                 'Before Images Texts': data.beforeImagesText,
                 'Process Images Texts': data.processImagesText,
                 'After Images Texts': data.afterImagesText,
-                'Submitted At': new Date().toISOString(),
                 'Status': '대기'
             };
             
-            console.log('Airtable에 생성할 레코드:', recordData);
+            console.log('📝 Airtable에 생성할 레코드:', recordData);
             
-            await base('Post Data Requests').create(recordData);
+            const createdRecord = await base('Post Data Requests').create(recordData);
             
-            console.log('Airtable 레코드 생성 성공');
+            console.log('✅ Airtable 레코드 생성 성공:', createdRecord.id);
+            return createdRecord;
         } catch (error) {
-            console.error('자료 요청 제출 실패:', error);
+            console.error('❌ 자료 요청 제출 실패:', error);
+            
+            // 에러 상세 정보 로깅
+            if (error instanceof Error) {
+                console.error('❌ 에러 메시지:', error.message);
+                console.error('❌ 에러 스택:', error.stack);
+            }
+            
+            // Airtable 특정 에러 처리
+            if ((error as any)?.statusCode) {
+                console.error('❌ Airtable HTTP 상태코드:', (error as any).statusCode);
+            }
+            
+            if ((error as any)?.error?.type) {
+                console.error('❌ Airtable 에러 타입:', (error as any).error.type);
+            }
+            
             throw error;
         }
     }
@@ -760,16 +980,72 @@ export class AirtableService {
         }
     }
 
+    // Post Data Requests의 Post Id 필드만 업데이트
+    static async updateDataRequestPostId(id: string, postId: string): Promise<void> {
+        try {
+            await base('Post Data Requests').update(id, {
+                'Post Id': postId
+            });
+            console.log('✅ Post Data Requests Post Id 업데이트 성공:', postId);
+        } catch (error) {
+            console.error('❌ Post Data Requests Post Id 업데이트 실패:', error);
+            throw error;
+        }
+    }
+
+    // Post Data Requests 레코드 직접 조회 (모든 필드 접근용)
+    static async getDataRequestRecord(id: string): Promise<any> {
+        try {
+            const record = await base('Post Data Requests').find(id);
+            return record;
+        } catch (error) {
+            console.error('❌ Post Data Requests 레코드 조회 실패:', error);
+            throw error;
+        }
+    }
+
     // 검토 결과 관련 메서드
     static async getPostReview(postId: string): Promise<PostReview | null> {
         try {
+            let searchPostId = postId;
+            
+            // ID 형식에 따라 검색할 postId 조정
+            if (postId.startsWith('rec') && !postId.startsWith('post_')) {
+                // record ID 형식이면 post_ 접두사 추가
+                searchPostId = `post_${postId}`;
+            }
+            
             const records = await base('Post Reviews')
                 .select({
-                    filterByFormula: `{Post ID} = '${postId}'`
+                    filterByFormula: `{Post ID} = '${searchPostId}'`
                 })
                 .all();
             
-            if (records.length === 0) return null;
+            if (records.length === 0) {
+                // post_ 접두사가 붙은 형식으로 찾지 못하면 원본 postId로 재시도
+                if (searchPostId !== postId) {
+                    const fallbackRecords = await base('Post Reviews')
+                        .select({
+                            filterByFormula: `{Post ID} = '${postId}'`
+                        })
+                        .all();
+                    
+                    if (fallbackRecords.length === 0) return null;
+                    
+                    const record = fallbackRecords[0];
+                    return {
+                        id: record.id,
+                        postId: record.get('Post ID') as string,
+                        seoScore: record.get('SEO Score') as number,
+                        legalScore: record.get('Legal Score') as number,
+                        seoChecklist: record.get('SEO Checklist') as string,
+                        legalChecklist: record.get('Legal Checklist') as string,
+                        reviewedAt: record.get('Reviewed At') as string,
+                        reviewer: record.get('Reviewer') as string,
+                    };
+                }
+                return null;
+            }
 
             const record = records[0];
             return {
@@ -797,10 +1073,50 @@ export class AirtableService {
                 'SEO Checklist': data.seoChecklist,
                 'Legal Checklist': data.legalChecklist,
                 'Reviewed At': new Date().toISOString(),
-                'Reviewer': data.reviewer
+                'Reviewer': data.reviewer || '리걸케어'
             });
         } catch (error) {
             console.error('검토 결과 제출 실패:', error);
+            throw error;
+        }
+    }
+
+    static async updatePostReview(postId: string, updates: {
+        seoScore?: number;
+        legalScore?: number;
+        seoChecklist?: string;
+        legalChecklist?: string;
+        reviewer?: string;
+    }): Promise<void> {
+        try {
+            // 기존 검토 결과 찾기
+            const existingReview = await this.getPostReview(postId);
+            
+            const fieldsToUpdate: any = {};
+            if (updates.seoScore !== undefined) fieldsToUpdate['SEO Score'] = updates.seoScore;
+            if (updates.legalScore !== undefined) fieldsToUpdate['Legal Score'] = updates.legalScore;
+            if (updates.seoChecklist !== undefined) fieldsToUpdate['SEO Checklist'] = updates.seoChecklist;
+            if (updates.legalChecklist !== undefined) fieldsToUpdate['Legal Checklist'] = updates.legalChecklist;
+            if (updates.reviewer !== undefined) fieldsToUpdate['Reviewer'] = updates.reviewer;
+            
+            // 업데이트할 필드가 있는 경우에만 진행
+            if (Object.keys(fieldsToUpdate).length > 0) {
+                fieldsToUpdate['Reviewed At'] = new Date().toISOString();
+            }
+            
+            if (existingReview) {
+                // 기존 레코드 업데이트
+                await base('Post Reviews').update(existingReview.id, fieldsToUpdate);
+                console.log(`✅ Post Review 업데이트 완료: ${postId}`);
+            } else {
+                // 새 레코드 생성
+                fieldsToUpdate['Post ID'] = postId;
+                fieldsToUpdate['Reviewer'] = updates.reviewer || '리걸케어';
+                await base('Post Reviews').create(fieldsToUpdate);
+                console.log(`✅ Post Review 생성 완료: ${postId}`);
+            }
+        } catch (error) {
+            console.error('검토 결과 업데이트 실패:', error);
             throw error;
         }
     }

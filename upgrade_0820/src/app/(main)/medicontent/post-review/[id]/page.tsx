@@ -99,16 +99,19 @@ const ScorePanel = ({ post, review, onTooltip }: { post: any; review: any; onToo
                                     {item.name}
                                 </td>
                                 <td className="px-2 py-2 text-center">
-                                    {item.standardScore}
+                                    {item.threshold}
                                 </td>
                                 <td className="px-2 py-2">
-                                    {item.result}
+                                    {tab === 'SEO' 
+                                        ? `등급: ${item.grade || 'N/A'} (실제값: ${item.actual_value || 0})`
+                                        : item.compliance_level || '평가 중'
+                                    }
                                 </td>
                                 <td className="px-2 py-2 text-center">
-                                    {item.resultScore}
+                                    {item.final_score}
                                 </td>
                                 <td className="px-2 py-2 text-center">
-                                    {item.passed ? (
+                                    {(tab === 'SEO' ? item.pass_status === 'O' : item.violation_status === '적합') ? (
                                         <span className="inline-block px-2 py-0.5 rounded-full bg-green-100 text-green-700 text-xs font-semibold">
                                             통과
                                         </span>
@@ -281,7 +284,8 @@ const DataRequestPanel = ({ post, onSaveForm }: { post: any; onSaveForm: (handle
     useEffect(() => {
         const loadExistingData = async () => {
             try {
-                const postId = `post_${post.id}`;
+                // 직접 record ID 사용 (단순화)
+                const postId = post.id;
                 const existingData = await AirtableService.getDataRequest(postId);
                 if (existingData) {
                     setFormData({
@@ -331,7 +335,8 @@ const DataRequestPanel = ({ post, onSaveForm }: { post: any; onSaveForm: (handle
                 fileArray.forEach(file => {
                     formData.append('files', file);
                 });
-                formData.append('postId', `post_${post.id}`);
+                // 직접 record ID 사용 (단순화)
+                formData.append('postId', post.id);
                 formData.append('imageType', type.replace('Images', '')); // 'beforeImages' -> 'before'
 
                 const response = await fetch('/api/medicontent/upload-images', {
@@ -364,7 +369,8 @@ const DataRequestPanel = ({ post, onSaveForm }: { post: any; onSaveForm: (handle
             console.log('폼 데이터 저장 시작:', formData);
             console.log('업로드된 이미지 상태:', uploadedImages);
             
-            const postId = `post_${post.id}`;
+            // 직접 record ID 사용 (단순화)  
+            const postId = post.id;
             const existingData = await AirtableService.getDataRequest(postId);
             
             // 업로드된 이미지 URL 사용
@@ -379,7 +385,7 @@ const DataRequestPanel = ({ post, onSaveForm }: { post: any; onSaveForm: (handle
             const requestData = {
                 ...formData,
                 ...imageData,
-                postId: `post_${post.id}` // PUT 요청에서도 postId 추가
+                postId: postId // 직접 record ID 사용
             };
             
             console.log('전체 저장 데이터:', requestData);
@@ -893,18 +899,13 @@ const PostDetailPage = ({ params }: { params: Promise<{ id: string }> }) => {
                         className="w-full flex-grow border-none"
                     />
                 ) : post.content ? (
-                    // HTML 콘텐츠가 있는 경우
-                    <div className="flex-grow overflow-auto">
-                        <div 
-                            className="p-6 max-w-none"
-                            style={{
-                                maxWidth: '100%',
-                                overflowX: 'hidden',
-                                wordWrap: 'break-word'
-                            }}
-                            dangerouslySetInnerHTML={{ __html: post.content }}
-                        />
-                    </div>
+                    // HTML 콘텐츠가 있는 경우 - iframe으로 변경
+                    <iframe
+                        srcDoc={post.content}
+                        className="w-full flex-grow border-none"
+                        style={{ backgroundColor: 'white', minHeight: '600px' }}
+                        title={post.title}
+                    />
                 ) : contentUrl ? (
                     // HTML 파일이 있는 경우
                     <iframe

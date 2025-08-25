@@ -2,9 +2,9 @@ import os
 import argparse
 import json
 from input_agent import InputAgent
-from plan_agent import PlanAgent
-from title_agent import TitleAgent
-from content_agent import ContentAgent
+#from plan_agent import PlanAgent
+#from title_agent import TitleAgent
+#from content_agent import ContentAgent
 # from image_agent import ImageAgent
 # from eval_agent import EvalAgent
 # from final_assembler import FinalAssembler
@@ -19,24 +19,19 @@ def load_env(env_path: str = ".env"):
 
 
 def parse_args():
-    """
-    Parse command-line arguments:
-      mode: 'test' or 'use' (default: 'use')
-      test_case_num: numeric test case for test mode (예: 11)
-      --env: path to environment file
-    """
+
     parser = argparse.ArgumentParser(description="블로그 자동화 멀티 에이전트 실행기")
     parser.add_argument(
         'mode', nargs='?', choices=['test', 'use'], default='use',
         help="모드 선택: 'test' 또는 'use' (기본: 'use')"
     )
     parser.add_argument(
-        'test_case_num', nargs='?',
-        help="테스트 모드일 때 사용할 케이스 번호 (예: 11)"
+        '--env', default='.env',
+        help="환경변수 파일 경로 (기본: env)"
     )
     parser.add_argument(
-        '--env', default=".env",
-        help="환경변수 파일 경로 (기본: .env)"
+        '--skip-input', action="store_true",
+        help="InputAgent 실행 건너뛰기 (기존 input_log 사용)"
     )
     return parser.parse_args()
 
@@ -46,105 +41,112 @@ def main():
     args = parse_args()
     load_env(args.env)
 
-    # 2. Input 데이터 준비
-    agent = InputAgent()
-    if args.mode == "test":
-        input_data = agent.run_test()
-    else:  # use 모드
-        input_data = agent.run_use()
+    print(f"🚀 에이전트 체인 실행 시작 (모드: {args.mode})")
+
+    # 2. Input 데이터 준비(선택적)
+    if not args.skip_input:
+        print("\n" + "="*60)
+        print("📝 1단계: InputAgent 실행")
+        print("="*60)
+        
+        agent = InputAgent()
+        input_data = agent.collect(mode=args.mode)
+
+        if input_data is None:
+            print("❌ InputAgent 실행 실패")
+            return
+        print("✅ InputAgent 완료")
+    else:
+        print("📂 InputAgent 건너뛰기 - 기존 input_log 사용")
+
+    # 3. PlanAgent 실행 (최신 input_logs.json 자동 탐지)
+    print("\n" + "="*60)
+    print("🎯 2단계: PlanAgent 실행")
+    print("="*60)
     
-    if input_data is None:
-        print("입력 데이터 수집에 실패했습니다.")
+    try:
+        from plan_agent import main as plan_main
+        plan_result = plan_main(mode=args.mode)  # input_data=None으로 최신 로그 자동 탐지
+        
+        if plan_result is None:
+            print("❌ PlanAgent 실행 실패")
+            return
+        
+        print("✅ PlanAgent 완료")
+    except Exception as e:
+        print(f"❌ PlanAgent 실행 실패: {e}")
         return
 
-    # test 모드일 때 터미널 출력
-    if args.mode == 'test':
-        print(f"🔍 [TEST MODE] using case: test_case_{args.test_case_num or '1'}")
-        print("🔍 [INPUT DATA]", json.dumps(input_data, indent=2, ensure_ascii=False))
+    # 4. TitleAgent 실행 (최신 plan.json 자동 탐지)
+    print("\n" + "="*60)
+    print("📰 3단계: TitleAgent 실행")
+    print("="*60)
+    
+    try:
+        from title_agent import run as title_run
+        title_result = title_run(mode=args.mode)  # 최신 plan.json 자동 탐지
+        
+        if title_result is None:
+            print("❌ TitleAgent 실행 실패")
+            return
+        
+        print("✅ TitleAgent 완료")
+    except Exception as e:
+        print(f"❌ TitleAgent 실행 실패: {e}")
+        return
 
-    # 3. PlanAgent 실행
-    #    - test 모드: 2-way로 고정 (rounds=2)
-    #    - use 모드 : CORT 모드, PlanAgent 내부 default_nway_rounds 사용 (rounds=None)
-    plan_agent = PlanAgent()
-    plan_rounds = 2 if args.mode == 'test' else None
-    plan, plan_candidates, plan_eval_info, _ = plan_agent.generate(
-        input_data=input_data,
-        mode='cli',
-        rounds=plan_rounds
-    )
-    plan_agent.save_log(
-        input_data=input_data,
-        candidates=plan_candidates,
-        best_output=json.dumps(plan, ensure_ascii=False),
-        selected=plan_eval_info['selected'],
-        reason=plan_eval_info['reason'],
-        mode=args.mode
-    )
+    # 5. ContentAgent 실행 (최신 title.json 자동 탐지)
+    print("\n" + "="*60)
+    print("📄 4단계: ContentAgent 실행")
+    print("="*60)
+    
+    try:
+        from content_agent import run as content_run
+        content_result = content_run(mode=args.mode)  # 최신 title.json 자동 탐지
+        
+        if content_result is None:
+            print("❌ ContentAgent 실행 실패")
+            return
+        
+        print("✅ ContentAgent 완료")
+    except Exception as e:
+        print(f"❌ ContentAgent 실행 실패: {e}")
+        return
 
-    # test 모드일 때 PlanAgent 결과 출력
-    if args.mode == 'test':
-        print("🔍 [PLAN CANDIDATES]")
-        print(json.dumps(plan_candidates, indent=2, ensure_ascii=False))
-        print(f"🔍 [PLAN SELECTED] {plan_eval_info['selected']}")
-        print("🔍 [PLAN REASON]", json.dumps(plan_eval_info['reason'], indent=2, ensure_ascii=False))
-        print("🔍 [PLAN RESULT]", json.dumps(plan, indent=2, ensure_ascii=False))
+    # 6. EvaluationAgent 실행 (최신 content TXT 자동 탐지)
+    print("\n" + "="*60)
+    print("⚖️ 5단계: EvaluationAgent 실행")
+    print("="*60)
+    
+    try:
+        from evaluation_agent import run as evaluation_run
+        
+        evaluation_run(
+            criteria_mode="표준",
+            max_loops=2,
+            auto_yes=True,  # 자동 실행
+            log_dir=f"test_logs/{args.mode}",
+            evaluation_mode="medical"
+        )
+        
+        print("✅ EvaluationAgent 완료")
+    except Exception as e:
+        print(f"❌ EvaluationAgent 실행 실패: {e}")
+        import traceback
+        traceback.print_exc()
 
-    # 4. TitleAgent 실행
-    title_agent = TitleAgent()
-    # test 모드: 2-way, use 모드: CORT n-way (internal default)
-    title_rounds = 2 if args.mode == 'test' else None
-    title, title_candidates, title_eval_info, _ = title_agent.generate(
-        input_data=plan,
-        mode='cli',
-        rounds=title_rounds
-    )
-    title_agent.save_log(
-        input_data=plan,
-        candidates=title_candidates,
-        best_output=json.dumps(title, ensure_ascii=False),
-        selected=title_eval_info['selected'],
-        reason=title_eval_info['reason'],
-        mode=args.mode
-    )
-
-    # test 모드일 때 TitleAgent 결과 출력
-    if args.mode == 'test':
-        print("🔍 [TITLE CANDIDATES]")
-        print(json.dumps(title_candidates, indent=2, ensure_ascii=False))
-        print(f"🔍 [TITLE SELECTED] {title_eval_info['selected']}")
-        print("🔍 [TITLE REASON]", json.dumps(title_eval_info['reason'], indent=2, ensure_ascii=False))
-        print("🔍 [TITLE RESULT]", json.dumps(title, indent=2, ensure_ascii=False))
-
-    # 5. ContentAgent 실행
-    content_agent = ContentAgent()
-    content, content_candidates, content_eval_info, _ = content_agent.generate(
-        input_data={**input_data, **plan, 'title': title},
-        mode=args.mode
-    )
-    content_agent.save_log(
-        input_data={**input_data, **plan, 'title': title},
-        candidates=content_candidates,
-        best_output=content,
-        selected=content_eval_info['selected'],
-        reason=content_eval_info['reason'],
-        mode=args.mode
-    )
-
-    # test 모드일 때 ContentAgent 결과 출력
-    if args.mode == 'test':
-        print("🔍 [CONTENT CANDIDATES]")
-        print(json.dumps(content_candidates, indent=2, ensure_ascii=False))
-        print(f"🔍 [CONTENT SELECTED] {content_eval_info['selected']}")
-        print("🔍 [CONTENT REASON]", json.dumps(content_eval_info['reason'], indent=2, ensure_ascii=False))
-        print("🔍 [CONTENT RESULT]", json.dumps(content, indent=2, ensure_ascii=False))
-
-    # 전체 글 출력 (제목 + 내용)
-    full_article = content_agent.format_full_article(content, input_data={**input_data, **plan, 'title': title})
+    # 7. 완료 메시지
     print("\n" + "="*80)
-    print("📝 [FULL ARTICLE]")
+    print("🎉 전체 에이전트 체인 실행 완료!")
     print("="*80)
-    print(full_article)
-    print("="*80)
+    
+    print("📁 생성된 로그 파일 확인:")
+    print(f"   test_logs/{args.mode}/[날짜]/")
+    print("   - *_input_logs.json (InputAgent)")
+    print("   - *_plan.json (PlanAgent)")
+    print("   - *_title.json (TitleAgent)")
+    print("   - *_content*.json + *.txt (ContentAgent)")
+    print("   - *_evaluation.json (EvaluationAgent)")
 
     # image_agent = ImageAgent()
     # images, image_candidates, image_eval_info, _ = image_agent.generate(content)

@@ -462,7 +462,7 @@ class InputAgent:
         print(f"📝 로그 저장 → {log_path}")
 
     def find_case_id_by_post_id(self, post_id: str, mode: str = "use") -> str:
-        """postId를 기반으로 기존 case_id를 찾기"""
+        """postId를 기반으로 기존 case_id를 찾기 (단순화된 구조)"""
         if not post_id:
             return None
             
@@ -474,9 +474,13 @@ class InputAgent:
                 logs = _read_json(log_file)
                 if isinstance(logs, list):
                     for log in reversed(logs):  # 최신 로그부터
-                        if log.get("postId") == post_id:
+                        # 단순화된 구조에서는 모든 ID 필드가 동일하므로 하나만 확인
+                        stored_post_id = log.get("postId", "")
+                        
+                        if stored_post_id == post_id:
                             print(f"🔍 기존 case_id 발견: {log.get('case_id')} (postId: {post_id})")
                             return log.get("case_id")
+                                
             except Exception as e:
                 print(f"⚠️ 로그 파일 읽기 실패: {log_file} - {e}")
                 continue
@@ -531,6 +535,9 @@ class InputAgent:
             save_name = (data.get("hospital") or {}).get("save_name", "")
             data["case_id"] = _gen_case_id(save_name)
 
+        # ⭐ postId 정보 정리 및 보완
+        self._ensure_post_id_fields(data)
+
         # ========== UI 연결 시 터미널 입력 부분 주석 처리 ==========
         # 업서트 여부
         # yn = input("저장/업데이트 하시겠습니까? (Y=등록/업데이트, N=로그만): ").strip().lower()
@@ -545,6 +552,30 @@ class InputAgent:
         # 로그
         self.save_log(data, mode=mode)
         return data
+
+    def _ensure_post_id_fields(self, data: dict) -> None:
+        """postId 관련 필드들을 단순화된 구조로 설정"""
+        
+        # 직접 postId 값 사용 (단순화)
+        post_id = data.get("postId", "")
+        
+        # 단순화된 필드 설정 - 모든 ID를 동일하게 처리
+        data.setdefault("postDataRequestId", post_id)  # 직접 record ID 사용
+        data.setdefault("medicontentPostId", post_id)  # 동일한 record ID 사용
+        data.setdefault("medicontentRecordId", post_id)  # 동일한 record ID 사용
+        
+        # 로그에 저장할 정보 요약
+        post_info = {
+            "postDataRequestId": post_id,
+            "medicontentPostId": post_id,
+            "medicontentRecordId": post_id
+        }
+        
+        print(f"📋 PostId 정보 저장 (단순화):")
+        print(f"   - Record ID (공통): {post_id}")
+        
+        # 명확한 구분을 위해 별도 필드 추가
+        data["_post_info"] = post_info
 
     # ---------- 병원 유사도 ----------
     @staticmethod
@@ -947,6 +978,42 @@ class InputAgent:
         )
         return ctx
 
+    # ---------- UI에서 받은 데이터 처리 (DB 조회 없음) ----------
+    def _ensure_post_id_fields_from_ui(self, data: dict) -> None:
+        """UI에서 받은 Post ID 관련 필드들을 단순화된 구조로 설정"""
+        # UI에서 받은 postId를 직접 record ID로 사용 (단순화)
+        post_id = data.get("postDataRequestId") or data.get("postId", "")
+        
+        # 단순화된 필드 설정 - 모든 ID를 동일하게 처리
+        data["postDataRequestId"] = post_id
+        data["medicontentPostId"] = post_id  
+        data["medicontentRecordId"] = post_id
+        data["postId"] = post_id  # 기존 호환성을 위해 유지
+        
+        # 디버깅용 요약 정보 추가
+        data["_post_info"] = {
+            "postDataRequestId": post_id,
+            "medicontentPostId": post_id,
+            "medicontentRecordId": post_id
+        }
+        
+        print("📋 PostId 정보 저장 (UI에서 전달받음, 단순화):")
+        print(f"   - Record ID (공통): {post_id}")
+
+    # 기존 DB 조회 함수들은 제거됨 - UI에서 모든 데이터를 받아서 처리
+
+    def _parse_image_list(self, image_string: str) -> List[Dict[str, str]]:
+        """쉼표로 구분된 이미지 문자열을 이미지 배열로 변환"""
+        if not image_string:
+            return []
+        
+        images = []
+        for img in image_string.split(','):
+            img = img.strip()
+            if img:
+                images.append({"filename": img, "description": ""})
+        return images
+
     # ========== UI 연결 시 터미널 입력 메서드 주석 처리 ==========
     # def _manual_questions_q1_to_q8(self, save_name: str) -> Dict[str, Any]:
     #     q1 = input("Q1. 질환 개념 및 강조 메시지: ").strip()
@@ -981,19 +1048,7 @@ class InputAgent:
     #         return self._finalize_and_save(self.input_data, mode=mode)
     
     def collect(self, mode: str = "use") -> dict:
-        # ⭐ PostID만 있는 경우: DB에서 데이터 조회 후 구성
-        if self.input_data and "postId" in self.input_data and len(self.input_data) == 1:
-            print(f"🔍 PostID로 DB 데이터 조회: {self.input_data['postId']}")
-            db_data = self._fetch_data_from_post_data_requests(self.input_data["postId"])
-            
-            if db_data:
-                self.input_data = db_data  # 완전한 데이터로 교체
-                print("✅ DB에서 데이터 조회 완료")
-            else:
-                print("⚠️ DB에 데이터 없음, 기본값 사용")
-                self.input_data = self._get_default_input_data(self.input_data["postId"])
-        
-        # 기존: 외부 주입이 있다면 스키마 보정 + 종료
+        # UI에서 받은 완전한 데이터를 그대로 사용 (DB 조회 불필요)
         if self.input_data:
             save_name = (self.input_data.get("hospital") or {}).get("save_name", "")
             
@@ -1007,7 +1062,25 @@ class InputAgent:
             self.input_data.setdefault("question3_visit_images", self.input_data.pop("visit_images", []))
             self.input_data.setdefault("question5_therapy_images", self.input_data.pop("therapy_images", []))
             self.input_data.setdefault("question7_result_images", self.input_data.pop("result_images", []))
-            self.input_data.setdefault("case_id", _gen_case_id(save_name))
+            
+            # 우선 확보: case_id
+            if not self.input_data.get("case_id"):
+                if self.input_data.get("updateMode") and "postId" in self.input_data:
+                    print(f"🔄 업데이트 모드: {self.input_data.get('updateMode')}, 기존 case_id: {self.input_data.get('existingCaseId')}")
+                    existing_case_id = self.find_case_id_by_post_id(self.input_data["postId"], mode=mode)
+                    if existing_case_id:
+                        print(f"🔍 기존 case_id 발견: {existing_case_id} (postId: {self.input_data['postId']})")
+                        print(f"📝 postId로 찾은 case_id로 업데이트 시도: {existing_case_id}")
+                        self.input_data["case_id"] = existing_case_id
+                    else:
+                        # 기존 case_id가 없으면 새로 생성
+                        self.input_data["case_id"] = _gen_case_id(save_name)
+                else:
+                    self.input_data["case_id"] = _gen_case_id(save_name)
+            
+            # postId 관련 필드 표준화 (UI에서 받은 데이터 사용)
+            self._ensure_post_id_fields_from_ui(self.input_data)
+            
             self.input_data["clinical_context"] = self._build_clinical_context(self.input_data)
             return self._finalize_and_save(self.input_data, mode=mode)
     
