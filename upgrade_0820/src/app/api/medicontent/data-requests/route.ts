@@ -43,10 +43,10 @@ function splitImageDescriptions(descriptionsText: string, imageCount: number): s
     return result;
 }
 
-// FastAPI 백엔드에 데이터 전달하는 함수
+// FastAPI 백엔드 medicontent generate에 데이터 전달하는 함수
 async function sendToInputAgent(data: any, isUpdate: boolean = false) {
     try {
-        console.log('🚀 sendToInputAgent 시작:', { postId: data.postId, isUpdate });
+        console.log('🚀 sendToMedicontentGenerate 시작:', { postId: data.postId, isUpdate });
         
         // FastAPI 서버 URL (환경변수로 설정 가능)
         const fastApiUrl = process.env.FASTAPI_BASE_URL || 'http://localhost:8000';
@@ -334,32 +334,42 @@ async function sendToInputAgent(data: any, isUpdate: boolean = false) {
             isFinalSave: data.isFinalSave || false // 최종 저장 여부 플래그
         };
 
-        // FastAPI input_agent 엔드포인트 호출
-        console.log('🚀 FastAPI 호출 시작:', `${fastApiUrl}/api/input-agent`);
+        // FastAPI medicontent generate 엔드포인트 호출
+        console.log('🚀 FastAPI 호출 시작:', `${fastApiUrl}/api/medicontent/generate`);
         console.log('📤 전송할 데이터 크기:', JSON.stringify(inputAgentData).length);
+        
+        // FastAPI가 기대하는 데이터 구조로 변환
+        const fastApiRequest = {
+            input_data: inputAgentData,
+            options: {
+                async: false,
+                steps: ["plan", "title", "content", "evaluate"],
+                evaluation_mode: "medical"
+            }
+        };
         
         const response = await fetch(`${fastApiUrl}/api/input-agent`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
             },
-            body: JSON.stringify(inputAgentData)
+            body: JSON.stringify(fastApiRequest)
         });
 
         console.log('📡 FastAPI 응답 상태:', response.status, response.statusText);
 
         if (response.ok) {
             const result = await response.json();
-            console.log('✅ FastAPI input_agent 전송 성공:', result);
+            console.log('✅ FastAPI medicontent generate 전송 성공:', result);
             return result;
         } else {
             const errorText = await response.text();
-            console.error('❌ FastAPI input_agent 전송 실패:', response.statusText);
+            console.error('❌ FastAPI medicontent generate 전송 실패:', response.statusText);
             console.error('❌ FastAPI 에러 응답:', errorText);
             throw new Error(`FastAPI 응답 실패: ${response.status} - ${response.statusText}`);
         }
     } catch (error) {
-        console.error('❌ FastAPI input_agent 전송 오류:', error);
+        console.error('❌ FastAPI medicontent generate 전송 오류:', error);
         throw error;
     }
 }
@@ -472,12 +482,12 @@ export async function POST(request: NextRequest) {
         
         try {
             const inputAgentResult = await sendToInputAgent(dataWithRealPostIds);
-            console.log('✅ FastAPI input_agent 등록 완료');
+            console.log('✅ FastAPI medicontent generate 등록 완료');
             
             return NextResponse.json({ 
                 message: '자료 요청이 제출되었습니다.',
                 airtable: '저장 완료',
-                inputAgent: '등록 완료'
+                medicontent: '등록 완료'
             });
         } catch (fastApiError) {
             // FastAPI 전송 실패해도 Airtable은 저장된 상태이므로 부분 성공으로 처리
@@ -629,12 +639,12 @@ export async function PUT(request: NextRequest) {
         
         try {
             const inputAgentResult = await sendToInputAgent(dataWithRealPostIds, true); // 업데이트 모드로 호출
-            console.log('✅ FastAPI input_agent 업데이트 완료');
+            console.log('✅ FastAPI medicontent generate 업데이트 완료');
             
             return NextResponse.json({ 
                 message: '자료 요청이 업데이트되었습니다.',
                 airtable: '업데이트 완료',
-                inputAgent: '업데이트 완료'
+                medicontent: '업데이트 완료'
             });
         } catch (fastApiError) {
             console.warn('⚠️ FastAPI 업데이트 실패, Airtable만 업데이트됨:', fastApiError);

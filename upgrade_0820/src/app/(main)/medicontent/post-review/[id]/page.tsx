@@ -284,8 +284,8 @@ const DataRequestPanel = ({ post, onSaveForm }: { post: any; onSaveForm: (handle
     useEffect(() => {
         const loadExistingData = async () => {
             try {
-                // 직접 record ID 사용 (단순화)
-                const postId = post.id;
+                // Post ID 사용 (Post Data Requests 검색용)
+                const postId = post.postId;
                 const existingData = await AirtableService.getDataRequest(postId);
                 if (existingData) {
                     setFormData({
@@ -335,8 +335,8 @@ const DataRequestPanel = ({ post, onSaveForm }: { post: any; onSaveForm: (handle
                 fileArray.forEach(file => {
                     formData.append('files', file);
                 });
-                // 직접 record ID 사용 (단순화)
-                formData.append('postId', post.id);
+                // Post ID 사용 (Post Data Requests용)
+                formData.append('postId', post.postId);
                 formData.append('imageType', type.replace('Images', '')); // 'beforeImages' -> 'before'
 
                 const response = await fetch('/api/medicontent/upload-images', {
@@ -369,8 +369,8 @@ const DataRequestPanel = ({ post, onSaveForm }: { post: any; onSaveForm: (handle
             console.log('폼 데이터 저장 시작:', formData);
             console.log('업로드된 이미지 상태:', uploadedImages);
             
-            // 직접 record ID 사용 (단순화)  
-            const postId = post.id;
+            // Post ID 사용 (Post Data Requests 검색용)  
+            const postId = post.postId;
             const existingData = await AirtableService.getDataRequest(postId);
             
             // 업로드된 이미지 URL 사용
@@ -773,12 +773,14 @@ const PostDetailPage = ({ params }: { params: Promise<{ id: string }> }) => {
     useEffect(() => {
         const fetchPostData = async () => {
             try {
-                const postData = await AirtableService.getPost(id);
+                // URL 파라미터에서 받은 id에 post_ 접두사를 붙여서 Post Id로 검색
+                const fullPostId = id.startsWith('post_') ? id : `post_${id}`;
+                const postData = await AirtableService.getPostByPostId(fullPostId);
                 if (postData) {
                     setPost(postData);
                     
-                    // 검토 데이터도 함께 로드
-                    const reviewData = await AirtableService.getPostReview(id);
+                    // 검토 데이터도 함께 로드 (동일한 fullPostId 사용)
+                    const reviewData = await AirtableService.getPostReview(fullPostId);
                     setReview(reviewData);
                 }
             } catch (error) {

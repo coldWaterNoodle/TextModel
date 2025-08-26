@@ -181,33 +181,6 @@ async def update_post_status_endpoint(request: Dict[str, str]):
         print(f"❌ 상태 업데이트 실패: {str(e)}")
         raise HTTPException(status_code=500, detail="상태 업데이트에 실패했습니다.")
 
-@router.post("/api/medicontent/data-requests")
-async def create_data_request(request: ContentGenerationRequest):
-    """UI에서 자료 요청 데이터 저장 (Post Data Requests 테이블)"""
-    try:
-        print(f"🔍 자료 요청 데이터 저장 시작: {request.postId}")
-        
-        # Post Data Requests 테이블에 저장
-        record_id = await save_to_post_data_requests(request)
-        
-        # ⚠️ 주의: 이 엔드포인트는 임시 저장용으로, 상태 변경은 하지 않음
-        # 상태 변경은 input-agent 엔드포인트에서 isFinalSave=true일 때만 처리
-        # await update_medicontent_post_status(request.postId, '리걸케어 작업 중')
-        
-        print(f"✅ 자료 요청 데이터 저장 완료: {record_id}")
-        
-        return {
-            "status": "success", 
-            "message": "자료 요청이 성공적으로 저장되었습니다.",
-            "record_id": record_id,
-            "postId": request.postId
-        }
-        
-    except Exception as e:
-        print(f"❌ 자료 요청 저장 실패: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail="자료 요청 제출에 실패했습니다.")
 
 @router.post("/api/generate-content-complete")
 async def generate_content_complete(request: ContentGenerationRequest):

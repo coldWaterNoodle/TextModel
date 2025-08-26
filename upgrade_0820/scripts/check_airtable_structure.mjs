@@ -23,6 +23,8 @@ async function checkTableStructure() {
     console.log('🔍 Airtable 테이블 구조 확인 중...\n');
     
     const tables = [
+        'Post Data Requests',
+        'Medicontent Posts',
         '[Demo] Funnel Daily Data',
         '[Demo] Reputation Issues', 
         '[Demo] Channel Status',
