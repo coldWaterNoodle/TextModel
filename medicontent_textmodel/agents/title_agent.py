@@ -297,9 +297,13 @@ def extract_context(plan: Dict[str, Any]) -> Dict[str, Any]:
     ctx = {
         "hospital_name": _get(plan, "context_vars.hospital_name", ""),
         "category": _get(plan, "context_vars.category", ""),
-        "city": _get(plan, "context_vars.city", ""),
-        "district": _get(plan, "context_vars.district", ""),
-        "region_phrase": _get(plan, "context_vars.region_phrase", ""),
+        # "city": _get(plan, "context_vars.city", ""),
+        # "district": _get(plan, "context_vars.district", ""),
+        # "region_phrase": _get(plan, "context_vars.region_phrase", ""),
+        # 지역명 비활성화 - 제목에서 지역명 제외
+        "city": "",
+        "district": "",
+        "region_phrase": "",
         "must_include_one_of": _get(plan, "title_plan.must_include_one_of", []),
         "must_not_include": _get(plan, "title_plan.must_not_include", []),
         "guidance": _get(plan, "title_plan.guidance", ""),
@@ -462,9 +466,13 @@ def run(plan: Optional[Dict[str, Any]] = None, plan_path: Optional[str | Path] =
     # 사용 데이터 로그용 추출
     used_data = {
         "category": _get(plan_obj, "context_vars.category", ""),
-        "city": _get(plan_obj, "context_vars.city", ""),
-        "district": _get(plan_obj, "context_vars.district", ""),
-        "region_phrase": _get(plan_obj, "context_vars.region_phrase", ""),
+        # "city": _get(plan_obj, "context_vars.city", ""),
+        # "district": _get(plan_obj, "context_vars.district", ""),
+        # "region_phrase": _get(plan_obj, "context_vars.region_phrase", ""),
+        # 지역명 비활성화
+        "city": "",
+        "district": "",
+        "region_phrase": "",
         "representative_persona": plan_obj.get("representative_persona", ""),
         "section_summaries": {k: v.get("summary", "") for k, v in _get(plan_obj, "content_plan.sections", {}).items()},
     }

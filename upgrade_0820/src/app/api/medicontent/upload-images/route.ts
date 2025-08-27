@@ -5,15 +5,29 @@ const AIRTABLE_API_KEY = process.env.NEXT_PUBLIC_AIRTABLE_API_KEY;
 const AIRTABLE_BASE_ID = process.env.NEXT_PUBLIC_AIRTABLE_BASE_ID;
 
 export async function POST(request: NextRequest) {
+    console.log('🚀 이미지 업로드 API 호출됨');
+    
     if (!AIRTABLE_API_KEY || !AIRTABLE_BASE_ID) {
+        console.error('❌ Airtable 환경변수 누락:', {
+            AIRTABLE_API_KEY: AIRTABLE_API_KEY ? '설정됨' : '누락',
+            AIRTABLE_BASE_ID: AIRTABLE_BASE_ID ? '설정됨' : '누락'
+        });
         return NextResponse.json({ error: 'Airtable 환경 변수가 설정되지 않았습니다.' }, { status: 500 });
     }
 
     try {
+        console.log('📝 FormData 파싱 시작...');
         const formData = await request.formData();
         const files = formData.getAll('files') as File[];
         const postId = formData.get('postId') as string;
         const imageType = formData.get('imageType') as 'before' | 'process' | 'after';
+        
+        console.log('📊 요청 데이터:', {
+            filesCount: files.length,
+            postId,
+            imageType,
+            fileNames: files.map(f => f.name)
+        });
 
         if (!files || files.length === 0) {
             return NextResponse.json({ error: '파일이 없습니다.' }, { status: 400 });
@@ -23,7 +37,9 @@ export async function POST(request: NextRequest) {
         }
 
         // 1. Post Data Request 레코드 ID 가져오기 (없으면 생성)
+        console.log('🔍 Post Data Request 레코드 찾기/생성 시작...');
         const recordId = await AirtableService.findOrCreateDataRequest(postId);
+        console.log('✅ Post Data Request 레코드 ID:', recordId);
 
         const attachmentFieldMap = {
             before: 'Before Images',
@@ -34,18 +50,26 @@ export async function POST(request: NextRequest) {
 
         const uploadedAttachments = [];
 
-        for (const file of files) {
+        console.log('📁 파일 업로드 시작...');
+        for (let i = 0; i < files.length; i++) {
+            const file = files[i];
+            console.log(`📎 파일 ${i + 1}/${files.length} 처리 중: ${file.name} (${file.type})`);
+            
             if (!file.type.startsWith('image/')) {
+                console.log('⚠️  이미지가 아닌 파일 스킵:', file.type);
                 continue;
             }
 
+            console.log('🔄 파일 변환 중...');
             const bytes = await file.arrayBuffer();
             const buffer = Buffer.from(bytes);
             const base64File = buffer.toString('base64');
 
             // 2. Airtable Content API로 업로드
             const uploadUrl = `https://content.airtable.com/v0/${AIRTABLE_BASE_ID}/${recordId}/${encodeURIComponent(attachmentFieldName)}/uploadAttachment`;
+            console.log('🌐 업로드 URL:', uploadUrl);
 
+            console.log('📡 Airtable API 요청 시작...');
             const airtableResponse = await fetch(uploadUrl, {
                 method: 'POST',
                 headers: {
@@ -59,10 +83,21 @@ export async function POST(request: NextRequest) {
                 }),
             });
 
+            console.log('📋 Airtable API 응답 상태:', airtableResponse.status, airtableResponse.statusText);
+            
             if (!airtableResponse.ok) {
-                const errorData = await airtableResponse.json();
-                console.error('Airtable 업로드 실패:', errorData);
-                throw new Error(`Airtable 업로드 실패: ${errorData.error?.message || 'Unknown error'}`);
+                const errorText = await airtableResponse.text();
+                console.error('❌ Airtable 업로드 실패:', {
+                    status: airtableResponse.status,
+                    statusText: airtableResponse.statusText,
+                    body: errorText
+                });
+                try {
+                    const errorData = JSON.parse(errorText);
+                    throw new Error(`Airtable 업로드 실패: ${errorData.error?.message || 'Unknown error'}`);
+                } catch (parseError) {
+                    throw new Error(`Airtable 업로드 실패: ${airtableResponse.status} ${airtableResponse.statusText}`);
+                }
             }
 
             const responseData = await airtableResponse.json();
@@ -90,9 +125,13 @@ export async function POST(request: NextRequest) {
             attachments: uploadedAttachments,
         });
     } catch (error) {
-        console.error('이미지 업로드 API 오류:', error);
+        console.error('❌ 이미지 업로드 API 오류:', error);
+        console.error('스택 트레이스:', error instanceof Error ? error.stack : 'No stack trace');
         return NextResponse.json(
-            { error: '이미지 업로드에 실패했습니다.' },
+            { 
+                error: '이미지 업로드에 실패했습니다.',
+                details: error instanceof Error ? error.message : String(error)
+            },
             { status: 500 }
         );
     }

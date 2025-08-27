@@ -36,6 +36,10 @@ if __package__ is None:
 # 이제 아래처럼 일반 임포트 사용
 from utils.html_converter import convert_content_to_html
 
+# UI 모드에서 emote 이미지 가져오기 위한 import
+import sys
+import asyncio
+
 # =========================
 # 환경설정 / 모델
 # =========================
@@ -214,28 +218,58 @@ def _improve_readability(text: str) -> str:
         return text
     
     # 1. 이스케이프된 줄바꿈 문자 정리
-    text = text.replace('\\n\\n', '\n\n')
-    text = text.replace('\\n', '\n')
-    text = text.replace('\\t', ' ')
+    text = text.replace('\\\\n\\\\n', '\\n\\n')
+    text = text.replace('\\\\n', '\\n')
+    text = text.replace('\\\\t', ' ')
 
     # 2. 쉼표(,) 뒤에 단순 줄바꿈 추가
-    text = re.sub(r'(,)(\s+)([가-힣A-Za-z0-9])', r'\1\n\3', text)
+    text = re.sub(r'(,)(\\s+)([가-힣A-Za-z0-9])', r'\\1\\n\\3', text)
     
-    # 3. 문장 부호 뒤에 빈 줄 추가 (한 칸 띄기)
+    # 3. 조건부 문장 부호 처리
+    
+    # 3-1. "" 안의 .!? 처리 (단순 줄바꿈)
+    def quote_replacer(match):
+        quote_content = match.group(1)
+        # "" 안에서 .!? 뒤에 단순 줄바꿈 추가
+        quote_content = re.sub(r'([?!.])(\\s+)([가-힣A-Za-z0-9])', r'\\1\\n\\3', quote_content)
+        return f'"{quote_content}"'
+    
+    text = re.sub(r'"([^"]*)"', quote_replacer, text)
+    
+    # 3-2. <> 안의 내용을 임시로 보호하고, 일반 .!? 처리 후 복원
+    angle_brackets_content = {}
+    placeholder_counter = 0
+    
+    def preserve_angle_brackets(match):
+        nonlocal placeholder_counter
+        placeholder = f"__ANGLE_BRACKET_{placeholder_counter}__"
+        angle_brackets_content[placeholder] = match.group(0)
+        placeholder_counter += 1
+        return placeholder
+    
+    # <> 내용을 플레이스홀더로 교체
+    text = re.sub(r'<[^>]*>', preserve_angle_brackets, text)
+    
+    # 3-3. 일반적인 .!? 처리 (빈 줄 추가)
     patterns = [
-        (r'([?!.])(\s+)(?!\n)([가-힣A-Za-z0-9])', r'\1\n\n\3'),  # ?!. 뒤에 빈 줄 추가
-        (r'(")(\s+)([가-힣A-Za-z0-9])', r'\1\n\n\3'),      # " 뒤에 빈 줄 추가
-        (r"(')(\s+)([가-힣A-Za-z0-9])", r'\1\n\n\3'),      # ' 뒤에 빈 줄 추가
+        (r'([?!.])(\\s+)(?!\\n)([가-힣A-Za-z0-9])', r'\\1\\n\\n\\3'),  # .!? 뒤에 빈 줄 추가
+        (r'(")(\\s+)([가-힣A-Za-z0-9])', r'\\1\\n\\n\\3'),      # " 뒤에 빈 줄 추가  
+        (r"(')(\\s+)([가-힣A-Za-z0-9])", r'\\1\\n\\n\\3'),      # ' 뒤에 빈 줄 추가
+        (r'(\\*)(\\s+)([가-힣A-Za-z0-9])', r'\\1\\n\\n\\3'),     # * 뒤에 빈 줄 추가 (이탈릭체)
         # 이모지 뒤에 빈 줄 추가 (포괄적 이모지 범위)
-        (r'([\U0001F000-\U0001FFFF\U00002600-\U000027BF])(\s+)([가-힣A-Za-z0-9])', r'\1\n\n\3'),
+        (r'([\\U0001F000-\\U0001FFFF\\U00002600-\\U000027BF])(\\s+)([가-힣A-Za-z0-9])', r'\\1\\n\\n\\3'),
     ]
     
     result = text
     for pattern, replacement in patterns:
         result = re.sub(pattern, replacement, result)
     
-    # 3. 연속된 줄바꿈 정리 (3개 이상을 2개로)
-    result = re.sub(r'\n{3,}', '\n\n', result)
+    # 3-4. <> 내용을 다시 복원
+    for placeholder, original_content in angle_brackets_content.items():
+        result = result.replace(placeholder, original_content)
+    
+    # 4. 연속된 줄바꿈 정리 (3개 이상을 2개로)
+    result = re.sub(r'\\n{3,}', '\\n\\n', result)
     
     return result.strip()
 
@@ -249,16 +283,13 @@ def _strip_quotes(s: str) -> str:
 import random
 GIF_DIR = Path("test_data/test_image/gif")
 
-_EMOTICON_MARK_RE = re.compile(r"\((행복|슬픔|신남|화남|일반|마무리)\)")
+_EMOTICON_MARK_RE = re.compile(r"\((행복|슬픔|신남|화남|일반|마무리|눈물)\)")
 # 게시글 단위로 동물 고정 & 풀 캐시
 _SESSION: Dict[str, Any] = {"animal": None, "pool": None}
 
-def _scan_gif_pool() -> Dict[str, Dict[str, List[Path]]]:
-    """
-    pool[animal][category] = [Path, ...]
-    파일명 패턴 예: 행복_토끼.gif / 일반_햄스터3.gif / 마무리_토끼2.gif
-    """
-    pool: Dict[str, Dict[str, List[Path]]] = {}
+def _scan_gif_pool_local() -> Dict[str, Dict[str, List[Dict[str, str]]]]:
+    """로컬 파일 시스템에서 GIF 스캔"""
+    pool: Dict[str, Dict[str, List[Dict[str, str]]]] = {}
     if not GIF_DIR.exists():
         return pool
     for p in GIF_DIR.glob("*.gif"):
@@ -271,10 +302,127 @@ def _scan_gif_pool() -> Dict[str, Dict[str, List[Path]]]:
         animal = re.sub(r"\d+$", "", animal_with_no)
         animal = animal.strip()
         d = pool.setdefault(animal, {})
-        d.setdefault(category, []).append(p)
+        d.setdefault(category, []).append({
+            "filename": p.name,
+            "url": str(p),
+            "alt": f"{category} {animal} 이모티콘",
+            "source": "local"
+        })
     return pool
 
-def _pick_animal_once(state: Dict[str, Any], pool: Dict[str, Dict[str, List[Path]]], preferred: Optional[str] = None) -> Optional[str]:
+def _scan_gif_pool_airtable() -> Dict[str, Dict[str, List[Dict[str, str]]]]:
+    """Airtable에서 GIF 정보 로딩 (로컬용 - 소문자 필드명)"""
+    pool: Dict[str, Dict[str, List[Dict[str, str]]]] = {}
+    
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+        
+        from pyairtable import Api
+        api = Api(os.getenv('AIRTABLE_API_KEY'))
+        table = api.table(os.getenv('AIRTABLE_BASE_ID'), 'Emote Images')
+        
+        # Active 필드가 빈 값이므로 모든 레코드 가져오기
+        records = table.all()
+        
+        for record in records:
+            fields = record['fields']
+            
+            emotion = fields.get('Emotion')  # 대문자 필드명
+            animal = fields.get('Animal')    # 대문자 필드명
+            name = fields.get('Name', f"{emotion}_{animal}" if emotion and animal else f"record_{record['id']}")
+            files = fields.get('File', [])   # 대문자 필드명
+            
+            if not emotion or not animal or not files:
+                continue
+            
+            file_info = files[0]
+            file_url = file_info['url']
+            
+            d = pool.setdefault(animal, {})
+            d.setdefault(emotion, []).append({
+                "filename": file_info['filename'],
+                "url": file_url,
+                "alt": f"{emotion} {animal} 이모티콘",
+                "source": "airtable"
+            })
+                
+        return pool
+        
+    except Exception as e:
+        print(f"❌ Airtable GIF 로드 실패: {e}")
+        return {}
+
+def _scan_gif_pool_airtable_ui() -> Dict[str, Dict[str, List[Dict[str, str]]]]:
+    """Airtable에서 GIF 정보 로딩 (UI용 - 대문자 필드명)"""
+    pool: Dict[str, Dict[str, List[Dict[str, str]]]] = {}
+    
+    try:
+        # API 경로를 sys.path에 추가
+        api_dir = ROOT_DIR / "api"
+        if str(api_dir) not in sys.path:
+            sys.path.insert(0, str(api_dir))
+        
+        from routes import get_emote_images_from_db
+        
+        # 동기 함수 호출
+        emotes = get_emote_images_from_db(active_only=True)
+        
+        print(f"🔍 UI GIF Pool: routes.py에서 {len(emotes)}개 emote 이미지 로드됨")
+        
+        for emote in emotes:
+            emotion = emote.get("emotion", "일반")  # routes.py에서는 소문자로 반환됨
+            animal = emote.get("animal", "토끼")    # routes.py에서는 소문자로 반환됨
+            filename = emote.get("filename", "")
+            url = emote.get("url", "")
+            name = emote.get("name", "")
+            
+            print(f"🔍 emote: emotion='{emotion}', animal='{animal}', filename='{filename}', name='{name}'")
+            
+            if not emotion or not animal or not url:
+                print(f"⚠️ 필수 필드 누락: emotion={emotion}, animal={animal}, url={bool(url)}")
+                continue
+            
+            d = pool.setdefault(animal, {})
+            d.setdefault(emotion, []).append({
+                "filename": filename or name or f"emote_{emote.get('id', 'unknown')}.gif",
+                "url": url,
+                "alt": f"{emotion} {animal} 이모티콘",
+                "source": "airtable_ui"
+            })
+            print(f"✅ GIF 추가: {animal} → {emotion}")
+                
+        print(f"🎯 UI GIF Pool 구성 완료: {len(pool)}개 동물, 총 {sum(len(cats) for cats in pool.values())}개 카테고리")
+        for animal, categories in pool.items():
+            print(f"  - {animal}: {list(categories.keys())}")
+            
+        return pool
+        
+    except Exception as e:
+        print(f"❌ Airtable UI GIF 로드 실패: {e}")
+        import traceback
+        traceback.print_exc()
+        return {}
+
+def _scan_gif_pool(use_airtable: bool = False, ui_mode: bool = False) -> Dict[str, Dict[str, List[Dict[str, str]]]]:
+    """GIF 풀 스캔 - 로컬 또는 Airtable"""
+    if use_airtable:
+        if ui_mode:
+            print("🔍 UI 모드로 Airtable GIF Pool 스캔 중...")
+            pool = _scan_gif_pool_airtable_ui()
+        else:
+            print("🔍 로컬 모드로 Airtable GIF Pool 스캔 중...")
+            pool = _scan_gif_pool_airtable()
+        if pool:  # Airtable 성공
+            return pool
+        else:  # Airtable 실패 시 로컬로 폴백
+            print("🔄 Airtable 실패, 로컬로 폴백...")
+            return _scan_gif_pool_local()
+    else:
+        return _scan_gif_pool_local()
+
+def _pick_animal_once(state: Dict[str, Any], pool: Dict[str, Dict[str, List[Dict[str, str]]]], preferred: Optional[str] = None) -> Optional[str]:
+    """동물 한 번 선택해서 세션에 고정"""
     if state.get("chosen_animal"):
         return state["chosen_animal"]
     candidates = list(pool.keys())
@@ -288,27 +436,34 @@ def _pick_animal_once(state: Dict[str, Any], pool: Dict[str, Dict[str, List[Path
     state["chosen_animal"] = animal
     return animal
 
-def _pick_gif_by(animal: str, category: str, pool: Dict[str, Dict[str, List[Path]]]) -> Optional[Path]:
-    cand = (pool.get(animal, {}) or {}).get(category, [])
-    if not cand:
+def _pick_gif_by(animal: str, category: str, pool: Dict[str, Dict[str, List[Dict[str, str]]]]) -> Optional[Dict[str, str]]:
+    """특정 동물과 감정으로 GIF 선택"""
+    candidates = (pool.get(animal, {}) or {}).get(category, [])
+    if not candidates:
         return None
-    return random.choice(cand)
+    return random.choice(candidates)
 
-def _gif_pool_cached() -> Dict[str, Dict[str, List[Path]]]:
+def _gif_pool_cached(use_airtable: bool = False, ui_mode: bool = False) -> Dict[str, Dict[str, List[Dict[str, str]]]]:
+    """캐시된 GIF 풀 반환"""
     if _SESSION["pool"] is None:
-        _SESSION["pool"] = _scan_gif_pool()
+        _SESSION["pool"] = _scan_gif_pool(use_airtable=use_airtable, ui_mode=ui_mode)
     return _SESSION["pool"]
 
-def _inject_emoticons_inline(text: str, sec_key: str) -> Tuple[str, List[Dict[str, str]]]:
+def _reset_gif_session():
+    """새 게시글 시작 시 GIF 세션 초기화"""
+    _SESSION["animal"] = None
+    _SESSION["pool"] = None
+
+def _inject_emoticons_inline(text: str, sec_key: str, use_airtable: bool = False, ui_mode: bool = False) -> Tuple[str, List[Dict[str, str]]]:
     """
-    (행복/슬픔/놀람/신남/화남/일반/마무리) 마커를 같은 동물 GIF로 치환.
+    (행복/슬픔/신남/화남/일반/마무리/눈물) 마커를 GIF로 치환
     - 섹션 1~6: 첫 마커에서 동물 랜덤 고정. 카테고리 없으면 '일반' 폴백 허용.
     - 섹션 7: (마무리)만 처리, '마무리_동물*' 없거나 동물 미고정이면 삽입하지 않음.
     """
     if not text:
         return text, []
 
-    pool = _gif_pool_cached()
+    pool = _gif_pool_cached(use_airtable=use_airtable, ui_mode=ui_mode)
     images_log: List[Dict[str, str]] = []
 
     def repl(m: re.Match) -> str:
@@ -324,9 +479,13 @@ def _inject_emoticons_inline(text: str, sec_key: str) -> Tuple[str, List[Dict[st
             media = _pick_gif_by(animal, "마무리", pool)
             if not media:
                 return ""  # 마무리_동물 파일 없음 → 삽입 안 함
-            alt = f"마무리 {animal} 이모티콘"
-            images_log.append({"filename": media.name, "path": str(media), "alt": alt, "position": "inline"})
-            return f"({str(media)})"
+            images_log.append({
+                "filename": media["filename"], 
+                "url": media["url"], 
+                "alt": media["alt"], 
+                "position": "emoticon"  # inline에서 emoticon으로 변경
+            })
+            return f"({media['url']})"
 
         # 섹션 1~6: 동물 없으면 지금 랜덤 고정
         animal = _SESSION.get("animal")
@@ -338,13 +497,19 @@ def _inject_emoticons_inline(text: str, sec_key: str) -> Tuple[str, List[Dict[st
 
         # 카테고리 선택: '마무리' 마커가 1~6에 오면 '일반'로 처리
         desired = "일반" if tag == "마무리" else tag
-        media = _pick_gif_by(animal, desired, pool) or (None if desired == "일반" else _pick_gif_by(animal, "일반", pool))
+        media = _pick_gif_by(animal, desired, pool)
+        if not media and desired != "일반":  # 폴백: 일반으로 시도
+            media = _pick_gif_by(animal, "일반", pool)
         if not media:
             return ""  # 해당/일반 모두 없으면 제거
 
-        alt = f"{desired} {animal} 이모티콘"
-        images_log.append({"filename": media.name, "path": str(media), "alt": alt, "position": "inline"})
-        return f"({str(media)})"
+        images_log.append({
+            "filename": media["filename"], 
+            "url": media["url"], 
+            "alt": media["alt"], 
+            "position": "emoticon"  # inline에서 emoticon으로 변경
+        })
+        return f"({media['url']})"
 
     new_text = _EMOTICON_MARK_RE.sub(repl, text)
     return new_text, images_log
@@ -414,22 +579,35 @@ def _dedup_and_limit_images(section_key: str,
                             images: List[Dict[str, str]],
                             used_keys: set) -> List[Dict[str, str]]:  # [NEW]
     """
-    - inline 이미지는 렌더 대상 아님 → 배열에서 제외(로그는 별개)
+    - inline 이미지는 렌더 대상 아님 → 배열에서 제외(로그는 별개)  
+    - emoticon 이미지는 HTML 렌더링에 포함됨
     - 전역 dedup(해시 우선, 실패 시 경로)
     - 섹션별 상한 적용
     - Q7은 전/후 페어링 정렬
     """
-    # 0) inline 제외 (assemble에서 무시되지만 로그 혼입 방지)
+    # 0) inline 제외 (emoticon은 포함, assemble에서 무시되지만 로그 혼입 방지)
     filtered = [im for im in images if (im.get("position") or "").lower() != "inline"]
 
     # 1) 전역 dedup
     unique: List[Dict[str, str]] = []
     for im in filtered:
-        # path 우선 설정(입력 path가 있으면 그걸 사용)
-        p = im.get("path") or ""
-        if not p and im.get("filename"):
-            p = f"test_data/test_image/{im['filename']}"
-            im["path"] = p
+        # URL이 있으면 path로 사용, 없으면 이미지 제외
+        path = im.get("path") or ""
+        url = im.get("url") or ""
+        
+        if url:
+            # URL이 있으면 path도 URL로 설정
+            im["path"] = url
+        elif path and path.startswith(('http://', 'https://')):
+            # path가 이미 URL이면 그대로
+            pass
+        elif path and not path.startswith(('http://', 'https://')):
+            # 로컬 path면 그대로 유지 (기존 로컬 이미지용)
+            pass
+        else:
+            # URL도 path도 없으면 이미지 제외
+            print(f"⚠️ 이미지 제외 (URL 없음): {im.get('filename', 'unknown')}")
+            continue
 
         key = _dedup_key_for_image(im)
         if key in used_keys:
@@ -451,7 +629,7 @@ def _dedup_and_limit_images(section_key: str,
 # =========================
 # 이미지 바인딩 해석
 # =========================
-def _resolve_images_for_section(plan_sec: Dict[str, Any], input_row: Dict[str, Any]) -> List[Dict[str, str]]:
+def _resolve_images_for_section(plan_sec: Dict[str, Any], input_row: Dict[str, Any], use_airtable: bool = False, ui_mode: bool = False) -> List[Dict[str, str]]:
     """
     확장 사항:
     - 배열 소스에 random 선택 지원: image_binding 항목에 "random": true
@@ -472,13 +650,12 @@ def _resolve_images_for_section(plan_sec: Dict[str, Any], input_row: Dict[str, A
 
         # 1) GIF 풀에서 선택 (감정/일반/마무리 등)
         if src == "gif_pool":
-            # 풀 캐시 확보
-            pool = _SESSION.get("pool") or _scan_gif_pool()
-            _SESSION["pool"] = pool
-
+            pool = _gif_pool_cached(use_airtable=use_airtable, ui_mode=ui_mode)
+            
             # 동물 한 번 고정 (선호 동물이 오면 그걸 우선)
             preferred_animal = b.get("animal")  # 예: "토끼" / "햄스터" 등
             animal = _pick_animal_once(_SESSION, pool, preferred=preferred_animal)
+            
             if animal:
                 # 카테고리 후보: category_try > category > 기본 ["일반"]
                 cat_try = b.get("category_try") or []
@@ -488,15 +665,16 @@ def _resolve_images_for_section(plan_sec: Dict[str, Any], input_row: Dict[str, A
 
                 picked = None
                 for cat in cat_try:
-                    picked = _pick_gif_by(animal, cat, pool)  # ← 함수명 교정
+                    picked = _pick_gif_by(animal, cat, pool)
                     if picked:
                         break
 
                 if picked:
                     out.append({
-                        "filename": picked.name,
-                        "path": str(picked),
-                        "alt": f"{cat_try[0] if cat_try else '일반'} {animal} GIF",
+                        "filename": picked["filename"],
+                        "url": picked["url"],
+                        "path": picked["url"],  # 호환성을 위해 path도 URL로 설정
+                        "alt": picked["alt"],
                         "position": position
                     })
             continue
@@ -528,12 +706,32 @@ def _resolve_images_for_section(plan_sec: Dict[str, Any], input_row: Dict[str, A
 
         for it in chosen:
             fn = it.get("filename", "")
-            path = (it.get("path") or f"test_data/test_image/{fn}")
+            url = it.get("url", "")
+            path = it.get("path", "")
+            
+            # URL 우선 사용
+            if url:
+                final_path = url
+            elif path and path.startswith(('http://', 'https://')):
+                final_path = path
+            elif path and not path.startswith(('http://', 'https://')):
+                # 로컬 path (기존 로컬 이미지용)
+                final_path = path
+            else:
+                # URL도 path도 없으면 이미지 제외
+                print(f"⚠️ 이미지 제외 (URL 없음): {fn}")
+                continue
+            
             entry = {
                 "filename": fn,
-                "path": path,
+                "path": final_path,
                 "position": position
             }
+            
+            # URL이 있으면 별도로도 저장
+            if url:
+                entry["url"] = url
+            
             desc = it.get("description", "")
             if desc:  # 값이 있을 때만 추가
                 entry["alt"] = desc 
@@ -556,17 +754,25 @@ SECTION_TITLE_MAP = {
 }
 
 def _build_ctx_vars(plan: Dict[str, Any], input_row: Dict[str, Any], title_obj: Dict[str, Any]) -> Dict[str, Any]:
-    city = _get(input_row, "city", "")
-    district = _get(input_row, "district", "")
-    region_phrase = (_get(input_row, "region_phrase", "") or f"{city} {district}".strip()).strip()
+    # city = _get(input_row, "city", "")
+    # district = _get(input_row, "district", "")
+    # region_phrase = (_get(input_row, "region_phrase", "") or f"{city} {district}".strip()).strip()
+    # 지역명 비활성화 - 제목과 content에서 지역명 제외
+    city = ""
+    district = ""
+    region_phrase = ""
 
     return {
         "title": _get(title_obj, "selected.title", ""),
         "hospital_name": _get(input_row, "hospital.name", ""),
         "save_name": _get(input_row, "hospital.save_name", ""),
-        "city": city,
-        "district": district,
-        "region_phrase": region_phrase,
+        # "city": city,
+        # "district": district, 
+        # "region_phrase": region_phrase,
+        # 지역명 비활성화
+        "city": "",
+        "district": "",
+        "region_phrase": "",
         "category": _get(input_row, "category", ""),
         "selected_symptom": _get(input_row, "selected_symptom", ""),
         "selected_procedure": _get(input_row, "selected_procedure", ""),
@@ -648,7 +854,10 @@ def _to_title_content_result(title: str, md: str) -> str:
         path = (m.group(2) or "").strip()
         pnorm = path.lower().replace("\\", "/")  # 경로 정규화
         
-        if pnorm.endswith(".gif") or "/test_data/test_image/gif/" in pnorm:
+        # GIF 파일 제거 (로컬 경로, Airtable URL 모두 고려)
+        if (pnorm.endswith(".gif") or 
+            "/test_data/test_image/gif/" in pnorm or 
+            "airtable.com" in pnorm):
             return ""  # GIF는 완전 제거
         
         # 일반 이미지: alt만 꺽쇠 없이 반환
@@ -659,8 +868,8 @@ def _to_title_content_result(title: str, md: str) -> str:
 
     body = _IMG_MD_RE.sub(_img_repl, body)
     
-    # 추가: (*.gif) 형태의 GIF 경로도 제거
-    gif_pattern = re.compile(r'\([^)]*\.gif[^)]*\)', re.IGNORECASE)
+    # 추가: (*.gif) 형태 및 Airtable URL 형태의 GIF 경로도 제거
+    gif_pattern = re.compile(r'\([^)]*(?:\.gif|airtable\.com)[^)]*\)', re.IGNORECASE)
     body = gif_pattern.sub("", body)
     
     body = re.sub(r"\n{3,}", "\n\n", body).strip()
@@ -691,8 +900,13 @@ def _save_json(mode: str, name: str, payload: dict) -> Path:
 def run(mode: str = DEF_MODE,
         input_path: Optional[str|Path] = None,
         plan_path: Optional[str|Path] = None,
-        title_path: Optional[str|Path] = None) -> Dict[str, Any]:
+        title_path: Optional[str|Path] = None,
+        use_airtable: bool = True,
+        ui_mode: bool = True) -> Dict[str, Any]:
 
+    # 0) GIF 세션 초기화 (새 게시글 시작)
+    _reset_gif_session()
+    
     # 1) 입력 수집
     if input_path:
         inp_path = Path(input_path); inp_row = _json_load(inp_path)
@@ -736,10 +950,10 @@ def run(mode: str = DEF_MODE,
         text = _clean_output(raw)
         text = _improve_readability(text)  # ← 추가
         # ✅ 이모티콘 마커 치환을 섹션별로 적용
-        text, emoticon_imgs = _inject_emoticons_inline(text, k)
+        text, emoticon_imgs = _inject_emoticons_inline(text, k, use_airtable, ui_mode)
 
         # 후보 이미지 수집
-        images = _resolve_images_for_section(sec_plan, inp_row)
+        images = _resolve_images_for_section(sec_plan, inp_row, use_airtable, ui_mode)
 
         # 로그용 inline도 합치되, 렌더 중복 방지를 위해 dedup 단계에서 inline 제거
         if emoticon_imgs:
@@ -763,6 +977,9 @@ def run(mode: str = DEF_MODE,
 
     # 4) 최종 조립 → 복붙용 문자열 생성
     md = _assemble_markdown(sections_out)
+    
+
+    
     title_content_result = _to_title_content_result(base_ctx.get("title", ""), md)
 
     # 5) 저장 (assembled_markdown에 복붙용 문자열을 저장하고, title_content_result 필드는 제거)
@@ -783,7 +1000,7 @@ def run(mode: str = DEF_MODE,
         "assembled_markdown": title_content_result,  # ✅ 복붙용 문자열로 교체
     }
     out_path = _save_json(mode, "content", result)
-    # HTML 버전 저장
+    # HTML 버전 저장 (Airtable URL 사용)
     html_path = convert_content_to_html(out_path)
     print(f"🌐 HTML 저장: {html_path}")
 
@@ -822,9 +1039,11 @@ if __name__ == "__main__":
     ap.add_argument("--input", default="", help="*_input_log(s).json 경로(미지정 시 최신)")
     ap.add_argument("--plan",  default="", help="*_plan.json 경로(미지정 시 최신)")
     ap.add_argument("--title", default="", help="*_title.json 경로(미지정 시 최신)")
+    ap.add_argument("--use-airtable", action="store_true", help="Airtable에서 GIF 이모티콘 로드 (기본: 로컬)")
     args = ap.parse_args()
 
     run(mode=args.mode,
         input_path=(args.input or None),
         plan_path=(args.plan or None),
-        title_path=(args.title or None))
+        title_path=(args.title or None),
+        use_airtable=args.use_airtable)

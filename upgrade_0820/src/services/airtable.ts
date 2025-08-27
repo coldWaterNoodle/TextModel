@@ -715,35 +715,104 @@ export class AirtableService {
         }
     }
 
-    static async getDataRequest(postId: string): Promise<PostDataRequest | null> {
+        static async getDataRequest(postId: string): Promise<PostDataRequest | null> {
         try {
             const records = await base('Post Data Requests')
                 .select({
-                    filterByFormula: `{Post ID} = '${postId}'`,
+                    filterByFormula: `{Post Id} = '${postId}'`,
                     maxRecords: 1,
                 })
                 .all();
 
             if (records.length === 0) {
-                return null;
+                console.log('🔍 Post Data Requests에서 데이터를 찾을 수 없음, Post ID로 다시 시도:', postId);
+                // 두 번째 시도: Post ID 필드로 검색
+                const recordsById = await base('Post Data Requests')
+                    .select({
+                        filterByFormula: `{Post ID} = '${postId}'`,
+                        maxRecords: 1,
+                    })
+                    .all();
+                    
+                if (recordsById.length === 0) {
+                    return null;
+                }
+                
+                const record = recordsById[0];
+                console.log('🔍 실제 레코드의 모든 필드 (Post ID로 검색):', record.fields);
+                console.log('🔍 필드명 리스트 (Post ID로 검색):', Object.keys(record.fields));
+                
+                // 각 필드 값 개별 확인
+                console.log('🔍 개별 필드 확인 (Post ID로 검색):');
+                console.log('  - Post Id:', record.get('Post Id'));
+                console.log('  - Post ID:', record.get('Post ID'));
+                console.log('  - Concept Message:', record.get('Concept Message'));
+                console.log('  - conceptMessage:', record.get('conceptMessage'));
+                console.log('  - Patient Condition:', record.get('Patient Condition'));
+                console.log('  - patientCondition:', record.get('patientCondition'));
+                console.log('  - Before Images:', record.get('Before Images'));
+                console.log('  - beforeImages:', record.get('beforeImages'));
+                
+                return {
+                    id: record.id,
+                    postId: record.get('Post Id') as string || record.get('Post ID') as string,
+                    conceptMessage: (record.get('Concept Message') as string) || (record.get('conceptMessage') as string) || '',
+                    patientCondition: (record.get('Patient Condition') as string) || (record.get('patientCondition') as string) || '',
+                    treatmentProcessMessage: (record.get('Treatment Process Message') as string) || (record.get('treatmentProcessMessage') as string) || '',
+                    treatmentResultMessage: (record.get('Treatment Result Message') as string) || (record.get('treatmentResultMessage') as string) || '',
+                    additionalMessage: (record.get('Additional Message') as string) || (record.get('additionalMessage') as string) || '',
+                    beforeImages: (() => {
+                        const beforeImages = (record.get('Before Images') as Attachment[]) || (record.get('beforeImages') as Attachment[]) || [];
+                        console.log('🔍 실제 beforeImages 데이터:', JSON.stringify(beforeImages, null, 2));
+                        return beforeImages;
+                    })(),
+                    processImages: (() => {
+                        const processImages = (record.get('Process Images') as Attachment[]) || (record.get('processImages') as Attachment[]) || [];
+                        console.log('🔍 실제 processImages 데이터:', JSON.stringify(processImages, null, 2));
+                        return processImages;
+                    })(),
+                    afterImages: (() => {
+                        const afterImages = (record.get('After Images') as Attachment[]) || (record.get('afterImages') as Attachment[]) || [];
+                        console.log('🔍 실제 afterImages 데이터:', JSON.stringify(afterImages, null, 2));
+                        return afterImages;
+                    })(),
+                    beforeImagesText: (record.get('Before Images Texts') as string) || (record.get('beforeImagesText') as string) || '',
+                    processImagesText: (record.get('Process Images Texts') as string) || (record.get('processImagesText') as string) || '',
+                    afterImagesText: (record.get('After Images Texts') as string) || (record.get('afterImagesText') as string) || '',
+                    submittedAt: record.get('Submitted At') as string,
+                    status: record.get('Status') as any,
+                };
             }
             
             const record = records[0];
+            console.log('🔍 실제 레코드의 모든 필드:', record.fields);
+            console.log('🔍 필드명 리스트:', Object.keys(record.fields));
+            
+            // 각 필드 값 개별 확인
+            console.log('🔍 개별 필드 확인:');
+            console.log('  - Post Id:', record.get('Post Id'));
+            console.log('  - Post ID:', record.get('Post ID'));
+            console.log('  - Concept Message:', record.get('Concept Message'));
+            console.log('  - conceptMessage:', record.get('conceptMessage'));
+            console.log('  - Patient Condition:', record.get('Patient Condition'));
+            console.log('  - patientCondition:', record.get('patientCondition'));
+            console.log('  - Before Images:', record.get('Before Images'));
+            console.log('  - beforeImages:', record.get('beforeImages'));
 
             return {
-    id: record.id,
-                postId: record.get('Post ID') as string,
-                conceptMessage: (record.get('Concept Message') as string) || '',
-                patientCondition: (record.get('Patient Condition') as string) || '',
-                treatmentProcessMessage: (record.get('Treatment Process Message') as string) || '',
-                treatmentResultMessage: (record.get('Treatment Result Message') as string) || '',
-                additionalMessage: (record.get('Additional Message') as string) || '',
-                beforeImages: (record.get('Before Images') as Attachment[]) || [],
-                processImages: (record.get('Process Images') as Attachment[]) || [],
-                afterImages: (record.get('After Images') as Attachment[]) || [],
-                beforeImagesText: (record.get('Before Images Texts') as string) || '',
-                processImagesText: (record.get('Process Images Texts') as string) || '',
-                afterImagesText: (record.get('After Images Texts') as string) || '',
+                id: record.id,
+                postId: record.get('Post Id') as string || record.get('Post ID') as string,
+                conceptMessage: (record.get('Concept Message') as string) || (record.get('conceptMessage') as string) || '',
+                patientCondition: (record.get('Patient Condition') as string) || (record.get('patientCondition') as string) || '',
+                treatmentProcessMessage: (record.get('Treatment Process Message') as string) || (record.get('treatmentProcessMessage') as string) || '',
+                treatmentResultMessage: (record.get('Treatment Result Message') as string) || (record.get('treatmentResultMessage') as string) || '',
+                additionalMessage: (record.get('Additional Message') as string) || (record.get('additionalMessage') as string) || '',
+                beforeImages: (record.get('Before Images') as Attachment[]) || (record.get('beforeImages') as Attachment[]) || [],
+                processImages: (record.get('Process Images') as Attachment[]) || (record.get('processImages') as Attachment[]) || [],
+                afterImages: (record.get('After Images') as Attachment[]) || (record.get('afterImages') as Attachment[]) || [],
+                beforeImagesText: (record.get('Before Images Texts') as string) || (record.get('beforeImagesText') as string) || '',
+                processImagesText: (record.get('Process Images Texts') as string) || (record.get('processImagesText') as string) || '',
+                afterImagesText: (record.get('After Images Texts') as string) || (record.get('afterImagesText') as string) || '',
                 submittedAt: record.get('Submitted At') as string,
                 status: record.get('Status') as any,
             };
@@ -755,6 +824,7 @@ export class AirtableService {
 
     static async findOrCreateDataRequest(postId: string): Promise<string> {
         try {
+            console.log('🔍 Post Data Request 검색 중...', { postId });
             const records = await base('Post Data Requests')
                 .select({
                     filterByFormula: `{Post ID} = '${postId}'`,
@@ -762,22 +832,36 @@ export class AirtableService {
                 })
                 .all();
 
+            console.log('📊 검색 결과:', { recordsCount: records.length });
+
             if (records.length > 0) {
+                console.log('✅ 기존 레코드 찾음:', records[0].id);
                 return records[0].id;
             } else {
+                console.log('📝 새 레코드 생성 중...');
                 const newRecord = await base('Post Data Requests').create({
                     'Post ID': postId, // Medicontent Posts의 Post Id와 동일한 값
                     'Status': '병원 작업 중',
                 });
+                console.log('✅ 새 레코드 생성됨:', newRecord.id);
                 return newRecord.id;
             }
         } catch (error) {
-            console.error('데이터 요청 레코드 찾기 또는 생성 실패:', error);
+            console.error('❌ 데이터 요청 레코드 찾기 또는 생성 실패:', error);
+            console.error('상세 정보:', {
+                postId,
+                errorMessage: error instanceof Error ? error.message : String(error),
+                stack: error instanceof Error ? error.stack : 'No stack trace'
+            });
             throw error;
         }
     }
 
-    static async submitDataRequest(data: Omit<PostDataRequest, 'id' | 'submittedAt' | 'status' | 'beforeImages' | 'processImages' | 'afterImages'>): Promise<any> {
+    static async submitDataRequest(data: Omit<PostDataRequest, 'id' | 'submittedAt' | 'status'> & {
+        beforeImages?: any[];
+        processImages?: any[];
+        afterImages?: any[];
+    }): Promise<any> {
         try {
             console.log('🔄 AirtableService.submitDataRequest 호출:', data);
             
@@ -787,7 +871,16 @@ export class AirtableService {
                 AIRTABLE_BASE_ID: AIRTABLE_BASE_ID ? `설정됨 (길이: ${AIRTABLE_BASE_ID.length})` : '누락'
             });
             
-            const recordData = {
+            // 1. 기존 레코드 확인 (Post ID로 검색)
+            console.log('🔍 기존 레코드 확인:', data.postId);
+            const existingRecords = await base('Post Data Requests')
+                .select({
+                    filterByFormula: `{Post ID} = '${data.postId}'`,
+                    maxRecords: 1,
+                })
+                .all();
+
+            const recordData: any = {
                 'Post ID': data.postId, // Medicontent Posts의 Post Id와 동일한 값
                 'Concept Message': data.conceptMessage,
                 'Patient Condition': data.patientCondition,
@@ -799,13 +892,43 @@ export class AirtableService {
                 'After Images Texts': data.afterImagesText,
                 'Status': '대기'
             };
+
+            // 이미지 필드 추가 (있는 경우에만)
+            if (data.beforeImages && data.beforeImages.length > 0) {
+                recordData['Before Images'] = data.beforeImages;
+                console.log('📸 Before Images 추가:', data.beforeImages.length, '개');
+            }
             
-            console.log('📝 Airtable에 생성할 레코드:', recordData);
+            if (data.processImages && data.processImages.length > 0) {
+                recordData['Process Images'] = data.processImages;
+                console.log('📸 Process Images 추가:', data.processImages.length, '개');
+            }
             
-            const createdRecord = await base('Post Data Requests').create(recordData);
+            if (data.afterImages && data.afterImages.length > 0) {
+                recordData['After Images'] = data.afterImages;
+                console.log('📸 After Images 추가:', data.afterImages.length, '개');
+            }
             
-            console.log('✅ Airtable 레코드 생성 성공:', createdRecord.id);
-            return createdRecord;
+            let result;
+            
+            if (existingRecords.length > 0) {
+                // 2. 기존 레코드 업데이트
+                const existingRecord = existingRecords[0];
+                console.log('🔄 기존 레코드 업데이트:', existingRecord.id);
+                console.log('📝 업데이트할 데이터:', recordData);
+                
+                result = await base('Post Data Requests').update(existingRecord.id, recordData);
+                console.log('✅ Airtable 레코드 업데이트 성공:', (result as any).id);
+            } else {
+                // 3. 새 레코드 생성
+                console.log('🆕 새 레코드 생성');
+                console.log('📝 생성할 데이터:', recordData);
+                
+                result = await base('Post Data Requests').create(recordData);
+                console.log('✅ Airtable 레코드 생성 성공:', (result as any).id);
+            }
+            
+            return result;
         } catch (error) {
             console.error('❌ 자료 요청 제출 실패:', error);
             

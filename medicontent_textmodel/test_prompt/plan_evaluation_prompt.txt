@@ -4,7 +4,7 @@
 아래 후보 기획안들을 루브릭에 따라 채점하고, 수정지시까지 제시한 뒤 평가 결과 JSON만 출력하세요.
 
 ## 입력
-- 병원/지역/save_name: {hospital_name} / {city} {district} {region_phrase} / {hospital_save_name}
+- 병원/save_name: {hospital_name} / {hospital_save_name}  # /{city} {district} {region_phrase}
 - 카테고리/페르소나: {category} / {representative_persona} / {persona_candidates} / {selected_personas}
 - 임상 요약: {clinical_summary}
 - 후보들(JSON 배열): {candidates_json}

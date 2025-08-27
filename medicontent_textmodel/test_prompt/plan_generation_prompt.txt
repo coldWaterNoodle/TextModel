@@ -25,13 +25,17 @@ Q8. {question8_extra}
 
 [생성 지침]
 1) title_plan:
-  - guidance: "{city}/{district}/{region_phrase} + 카테고리 + 핵심 키워드" 중 하나 이상 반드시 포함, 24~36자
-  - SEO: 지역명·카테고리 각 1회 이상, 불필요 반복·과장·가격 문구 금지
-  - must_include_one_of: ["{city}", "{district}", "{region_phrase}"]
+  # - guidance: "{city}/{district}/{region_phrase} + 카테고리 + 핵심 키워드" 중 하나 이상 반드시 포함, 24~36자
+  - guidance: "카테고리 + 핵심 키워드 반드시 포함, 24~36자"
+  # - SEO: 지역명·카테고리 각 1회 이상, 불필요 반복·과장·가격 문구 금지
+  - SEO: 카테고리 키워드 포함, 불필요 반복·과장·가격 문구 금지
+  # - must_include_one_of: ["{city}", "{district}", "{region_phrase}"]
+  - must_include_one_of: []
   - must_include: []
   - must_not_include: ["{hospital_name}", "가격", "이벤트", "전화번호", "1등", "최고", "완치", "보장"]
   - tone: 전문적·친절한 의사 설명
-  - hints: category, 지역 관련 키워드 2~3개
+  # - hints: category, 지역 관련 키워드 2~3개
+  - hints: category 관련 키워드 2~3개
 
 2) content_plan:
   - sections_order: ["1_intro","2_visit","3_inspection","4_doctor_tip","5_treatment","6_check_point","7_conclusion"]
@@ -44,11 +48,13 @@ Q8. {question8_extra}
 
     - 소프트 앵커 권장:
     • 1_intro → may_include: ["{selected_symptom}", "{category}"]
-    • 2_visit → may_include: ["{selected_symptom}", "{region_phrase}"]
+    # • 2_visit → may_include: ["{selected_symptom}", "{region_phrase}"]
+    • 2_visit → may_include: ["{selected_symptom}"]
     • 3_inspection → may_include: ["{selected_procedure}"]
     • 5_treatment → may_include: ["{selected_treatment}", "{category}"]; must_not_include: ["가격","무통증 단정"]
     • 4_doctor_tip → must_not_include: ["가격","이벤트"]
-    • 6_check_point → may_include: ["{region_phrase}"]; must_not_include: ["과장표현"]
+    # • 6_check_point → may_include: ["{region_phrase}"]; must_not_include: ["과장표현"]
+    • 6_check_point → may_include: []; must_not_include: ["과장표현"]
     • 7_conclusion → must_not_include: ["가격","이벤트","전화번호 직기재"]
 
 [출력 형식 — 반드시 이 JSON 스키마만 출력]
@@ -59,7 +65,8 @@ Q8. {question8_extra}
     "must_include": [],
     "must_not_include": [],
     "tone": "...",
-    "hints": { "category": "", "region_examples": [] }
+    # "hints": { "category": "", "region_examples": [] }
+    "hints": { "category": "" }
   },
   "content_plan": {
     "sections_order": ["1_intro","2_visit","3_inspection","4_doctor_tip","5_treatment","6_check_point","7_conclusion"],
@@ -77,4 +84,4 @@ Q8. {question8_extra}
 주의:
 - 결과로 오직 하나의 JSON만 출력하세요.
 - 이외의 어떤 문장도 출력하지 않습니다.
-- 병원명은 제목에 넣지 않습니다. 지역명은 필요 시 자연스럽게 배치하나, 추천하지는 않습니다.
+- 병원명은 제목에 넣지 않습니다. # 지역명은 필요 시 자연스럽게 배치하나, 추천하지는 않습니다.

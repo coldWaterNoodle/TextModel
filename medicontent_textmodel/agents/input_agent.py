@@ -535,19 +535,27 @@ class InputAgent:
             save_name = (data.get("hospital") or {}).get("save_name", "")
             data["case_id"] = _gen_case_id(save_name)
 
-        # ⭐ postId 정보 정리 및 보완
-        self._ensure_post_id_fields(data)
+        # ⭐ postId 정보 정리 및 보완 (UI 모드에서만)
+        if data.get("postId") or data.get("postDataRequestId"):
+            self._ensure_post_id_fields(data)
+        else:
+            # 터미널 모드에서는 postId 관련 필드를 빈 값으로 설정
+            data.setdefault("postId", "")
+            data.setdefault("postDataRequestId", "")
+            data.setdefault("medicontentPostId", "")
+            data.setdefault("medicontentRecordId", "")
 
-        # ========== UI 연결 시 터미널 입력 부분 주석 처리 ==========
-        # 업서트 여부
-        # yn = input("저장/업데이트 하시겠습니까? (Y=등록/업데이트, N=로그만): ").strip().lower()
-        # if yn == "y":
-        #     self.upsert_test_input_result(data)
-        # else:
-        #     print("ℹ️ 업서트 생략, 로그만 저장합니다.")
-        
-        # UI 모드에서는 자동으로 로그만 기록
-        print("🔄 UI 모드: 로그만 기록합니다.")
+        # 업서트 여부 (터미널 모드에서만 묻기)
+        if data.get("postId") or data.get("postDataRequestId"):
+            # UI 모드에서는 자동으로 로그만 기록
+            print("🔄 UI 모드: 로그만 기록합니다.")
+        else:
+            # 터미널 모드에서는 사용자에게 선택권 제공
+            yn = input("저장/업데이트 하시겠습니까? (Y=등록/업데이트, N=로그만): ").strip().lower()
+            if yn == "y":
+                self.upsert_test_input_result(data)
+            else:
+                print("ℹ️ 업서트 생략, 로그만 저장합니다.")
 
         # 로그
         self.save_log(data, mode=mode)
@@ -1014,26 +1022,26 @@ class InputAgent:
                 images.append({"filename": img, "description": ""})
         return images
 
-    # ========== UI 연결 시 터미널 입력 메서드 주석 처리 ==========
-    # def _manual_questions_q1_to_q8(self, save_name: str) -> Dict[str, Any]:
-    #     q1 = input("Q1. 질환 개념 및 강조 메시지: ").strip()
-    #     q2 = input("Q2. 내원 당시 환자 상태/검사(증상 중심): ").strip()
-    #     q3_imgs = self._input_image_pairs("Q3. 내원 시 촬영 이미지", save_name=save_name)
-    #     q4 = input("Q4. 치료 내용(과정/재료/횟수 등 진료 중심): ").strip()
-    #     q5_imgs = self._input_image_pairs("Q5. 치료 중/후 이미지", save_name=save_name)
-    #     q6 = input("Q6. 치료 결과/예후/주의사항: ").strip()
-    #     q7_imgs = self._input_image_pairs("Q7. 결과 이미지", save_name=save_name)
-    #     q8 = input("Q8. 기타 강조사항(통증/심미/기능 등): ").strip()
-    #     return {
-    #         "question1_concept": q1,
-    #         "question2_condition": q2,
-    #         "question3_visit_images": q3_imgs,
-    #         "question4_treatment": q4,
-    #         "question5_therapy_images": q5_imgs,
-    #         "question6_result": q6,
-    #         "question7_result_images": q7_imgs,
-    #         "question8_extra": q8,
-    #     }
+    # ========== 터미널 입력을 위한 질문 메서드 ==========
+    def _manual_questions_q1_to_q8(self, save_name: str) -> Dict[str, Any]:
+        q1 = input("Q1. 질환 개념 및 강조 메시지: ").strip()
+        q2 = input("Q2. 내원 당시 환자 상태/검사(증상 중심): ").strip()
+        q3_imgs = self._input_image_pairs("Q3. 내원 시 촬영 이미지", save_name=save_name)
+        q4 = input("Q4. 치료 내용(과정/재료/횟수 등 진료 중심): ").strip()
+        q5_imgs = self._input_image_pairs("Q5. 치료 중/후 이미지", save_name=save_name)
+        q6 = input("Q6. 치료 결과/예후/주의사항: ").strip()
+        q7_imgs = self._input_image_pairs("Q7. 결과 이미지", save_name=save_name)
+        q8 = input("Q8. 기타 강조사항(통증/심미/기능 등): ").strip()
+        return {
+            "question1_concept": q1,
+            "question2_condition": q2,
+            "question3_visit_images": q3_imgs,
+            "question4_treatment": q4,
+            "question5_therapy_images": q5_imgs,
+            "question6_result": q6,
+            "question7_result_images": q7_imgs,
+            "question8_extra": q8,
+        }
 
     # ---------- collect (핵심 엔트리) ----------
     # def collect(self, mode: str = "use") -> dict:
@@ -1081,26 +1089,25 @@ class InputAgent:
             # postId 관련 필드 표준화 (UI에서 받은 데이터 사용)
             self._ensure_post_id_fields_from_ui(self.input_data)
             
-            self.input_data["clinical_context"] = self._build_clinical_context(self.input_data)
+            # self.input_data["clinical_context"] = self._build_clinical_context(self.input_data)  # 임시 주석 처리 - 성능 개선
             return self._finalize_and_save(self.input_data, mode=mode)
     
-        # ========== UI 연결 시 터미널 입력 부분 주석 처리 ==========
-        # # 1) 병원 정보
-        # use_manual = input("병원 정보를 수동 입력하시겠습니까? (Y/N): ").strip().lower() == "y"
-        # if use_manual:
-        #     hospital_info = self.manual_input_hospital_info()
-        # else:
-        #     hospital_name = input("병원 이름을 입력하세요: ").strip()
-        #     hospital_info = self.interactive_select_hospital(hospital_name)
-        # 
-        # region_info = self.extract_region_info(hospital_info.get("address", ""))
-        # save_name = hospital_info.get("save_name", "") or "hospital"
-        # 
-        # # 나머지 모든 터미널 입력 코드들...
+        # ========== 터미널 입력 모드 ==========
+        print("🖥️ 터미널 입력 모드: 대화형으로 데이터를 입력받습니다.")
         
-        # UI 연결 시에는 input_data가 없으면 에러
-        print("❌ UI 모드에서는 input_data가 필요합니다.")
-        raise ValueError("UI 모드에서는 input_data가 필요합니다.")
+        # 1) 병원 정보
+        use_manual = input("병원 정보를 수동 입력하시겠습니까? (Y/N): ").strip().lower() == "y"
+        if use_manual:
+            hospital_info = self.manual_input_hospital_info()
+        else:
+            hospital_name = input("병원 이름을 입력하세요: ").strip()
+            hospital_info = self.interactive_select_hospital(hospital_name)
+        
+        region_info = self.extract_region_info(hospital_info.get("address", ""))
+        save_name = hospital_info.get("save_name", "") or "hospital"
+        
+        # 2) 터미널 입력 플로우 실행
+        return self._collect_use_like_flow(hospital_info, region_info, save_name, mode)
 
     # ---------- 카테고리 수동 입력 ----------
     def _input_category(self) -> str:
@@ -1144,7 +1151,7 @@ class InputAgent:
             "persona_candidates": selected_personas or rep_personas,
             "representative_persona": (selected_personas[0] if selected_personas else (rep_personas[0] if rep_personas else "")),
         }
-        data["clinical_context"] = self._build_clinical_context(data)
+        # data["clinical_context"] = self._build_clinical_context(data)  # 임시 주석 처리 - 성능 개선
         return self._finalize_and_save(data, mode=mode)
 
 # ------------------------------

@@ -210,12 +210,23 @@ class BlogHTMLConverter:
         for img in images:
             original_path = img.get('path', '')
             alt_text = img.get('alt', '')
-        
-            # 상대 경로 추가
-            if original_path and not original_path.startswith('../'):
-                img_path = f"../../../{original_path}"
-            else:
+            
+            # 🔧 Airtable URL 우선 사용 (프록시 URL 포함)
+            if img.get('url') and (img['url'].startswith(('http://', 'https://')) or img['url'].startswith('/airtable/')):
+                # Airtable URL 또는 프록시 URL 직접 사용
+                img_path = img['url']
+            elif original_path and (original_path.startswith(('http://', 'https://')) or original_path.startswith('/airtable/')):
+                # path가 이미 URL 또는 프록시 URL인 경우
                 img_path = original_path
+            elif original_path:
+                # 로컬 경로인 경우 상대 경로 추가
+                if not original_path.startswith('../'):
+                    img_path = f"../../../{original_path}"
+                else:
+                    img_path = original_path
+            else:
+                # 경로가 없으면 이미지 건너뛰기
+                continue
         
             if react_mode:
                 # React 모드: style을 객체로
@@ -267,8 +278,8 @@ class BlogHTMLConverter:
             if not text:
                 return ""
             # 1. 이스케이프된 줄바꿈 문자 정리
-            text = text.replace('\\n\\n', '\n\n')
-            text = text.replace('\\n', '\n')
+            text = text.replace('\\\\n\\\\n', '\\n\\n')
+            text = text.replace('\\\\n', '\\n')
                     # 6. **굵게** → <strong>굵게</strong>
             text = re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', text)
             # 7. *기울임* → <em>기울임</em>
@@ -284,16 +295,53 @@ class BlogHTMLConverter:
                 else:
                     return f'\n\n<img src="../../../{path}" alt="" style="width:auto; height:auto; max-width:100px;">'
             text = re.sub(r'\(([^)]+\.gif)\)', replace_gif_path, text)
-            # 4. 모든 줄바꿈을 <br>로 변환 (113259 방식)
+            
+            # 3-2. URL을 이미지 태그로 변환 (Airtable URL 포함)
+            def replace_image_url(m):
+                url = m.group(1)
+                if react_mode:
+                    style_obj = '{width: "100%", maxWidth: "500px", height: "auto"}'
+                    return f'\n\n<img src="{url}" alt="첨부 이미지" style={style_obj} />'
+                else:
+                    return f'\n\n<img src="{url}" alt="첨부 이미지" style="width:100%; max-width:500px; height:auto;">'
+            
+            # (https://...) 형태의 URL을 이미지로 변환
+            text = re.sub(r'\((https?://[^)\s]+)\)', replace_image_url, text)
+            
+                 # 4. 모든 줄바꿈을 <br>로 변환 (113259 방식)
             if react_mode:
                 text = text.replace('\n\n', '<br /><br />')  # React 자체 닫힘 태그
                 text = text.replace('\n', '<br />')
             else:
                 text = text.replace('\n\n', '<br><br>')  # 빈 줄 → <br><br>
                 text = text.replace('\n', '<br>')        # 단일 줄바꿈 → <br>
-            # 5. 하나의 <p> 태그로 감싸기
+             
+            # 5. 후처리: 조건부 <br> 정리
+            # 5-1. <> 안의 ,.!? 뒤 <br> 제거
+            def fix_angle_brackets(match):
+                content = match.group(1)
+                # <> 안에서 ,.!? 뒤의 <br> 제거
+                content = re.sub(r'([,.!?])<br>', r'\1', content)
+                return f'<{content}>'
+             
+            text = re.sub(r'<([^>]*)>', fix_angle_brackets, text)
+             
+            # 5-2. "" 안의 !?. 뒤 <br><br>를 <br>로 변경 (빈 줄 → 단순 줄바꿈)
+            def fix_quotes(match):
+                content = match.group(1)
+                # "" 안에서 !?. 뒤의 <br><br>를 <br>로 변경
+                content = re.sub(r'([!?.])<br><br>', r'\1<br>', content)
+                return f'"{content}"'
+             
+            text = re.sub(r'"([^"]*)"', fix_quotes, text)
+             
+            # 5-3. </em> 뒤에 <br><br> 추가 (이탈릭체 뒤 빈 줄)
+            text = re.sub(r'(</em>)<br>([가-힣A-Za-z0-9])', r'\1<br><br>\2', text)
+             
+            # 6. 하나의 <p> 태그로 감싸기
             text = f'<p>{text}</p>'
             return text
+
 
     def _add_word_breaks_safe(self, text: str) -> str:
         """기존 줄바꿈을 유지하면서 긴 줄만 3-6단어씩 끊기"""

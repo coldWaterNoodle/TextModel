@@ -43,8 +43,11 @@ function splitImageDescriptions(descriptionsText: string, imageCount: number): s
     return result;
 }
 
-// FastAPI 백엔드 medicontent generate에 데이터 전달하는 함수
-async function sendToInputAgent(data: any, isUpdate: boolean = false) {
+// FastAPI 백엔드에 데이터 전달하는 함수 (세 가지 모드 지원)
+// mode: 'input-only' = 테스트용 - input 에이전트만 실행 (로그 저장만)
+// mode: 'half-agents' = 테스트용 - plan→title→content→evaluation 실행
+// mode: 'all-agents' = 실사용 - 전체 워크플로우 (input→plan→title→content→evaluation)
+async function sendToFastAPI(data: any, isUpdate: boolean = false, mode: 'input-only' | 'half-agents' | 'all-agents' = 'all-agents') {
     try {
         console.log('🚀 sendToMedicontentGenerate 시작:', { postId: data.postId, isUpdate });
         
@@ -77,12 +80,46 @@ async function sendToInputAgent(data: any, isUpdate: boolean = false) {
                 
                 // 올바른 ID 매핑: UI postId로 직접 Medicontent Posts 조회
                 try {
-                    // 1. postId를 직접 record ID로 사용 (단순화)
-                    console.log(`🔍 1단계: postId로 Medicontent Posts 직접 조회: ${data.postId}`);
-                    const recordId = data.postId;
-                    console.log(`🔍 1단계: record ID 사용: ${recordId}`);
-                    const medicontentPost = await AirtableService.getPost(recordId);
+                    // 1. 받은 ID가 record ID인지 Post ID인지 판단해서 적절한 함수 사용
+                    console.log(`🔍 1단계: 받은 ID로 Medicontent Posts 조회: ${data.postId}`);
+                    
+                    let medicontentPost;
+                    if (data.postId.startsWith('post_')) {
+                        // Post ID 형태인 경우 getPostByPostId 사용
+                        console.log(`🔍 1단계: Post ID 형태 감지, getPostByPostId 사용`);
+                        medicontentPost = await AirtableService.getPostByPostId(data.postId);
+                    } else if (data.postId.startsWith('rec')) {
+                        // Record ID 형태인 경우 getPost 사용
+                        console.log(`🔍 1단계: Record ID 형태 감지, getPost 사용`);
+                        medicontentPost = await AirtableService.getPost(data.postId);
+                    } else {
+                        // 알 수 없는 형태인 경우 둘 다 시도
+                        console.log(`🔍 1단계: 알 수 없는 ID 형태, 두 방법 모두 시도`);
+                        medicontentPost = await AirtableService.getPostByPostId(data.postId);
+                        if (!medicontentPost) {
+                            medicontentPost = await AirtableService.getPost(data.postId);
+                        }
+                    }
                     console.log(`🔍 1단계 결과:`, medicontentPost);
+                    
+                    // 디버깅: 조회 실패 시 실제 DB에 있는 Post ID 목록 확인
+                    if (!medicontentPost && data.postId.startsWith('post_')) {
+                        console.log('🔍 디버깅: 조회 실패, 실제 DB에 있는 Post ID 확인 중...');
+                        const allPosts = await AirtableService.getPosts();
+                        const postIds = allPosts.map(p => p.postId).filter(id => id);
+                        console.log('📋 DB에 실제로 있는 Post ID 목록:');
+                        postIds.slice(0, 10).forEach((id, idx) => {
+                            console.log(`   ${idx + 1}. "${id}"`);
+                            if (id === data.postId) {
+                                console.log(`   ⭐ 정확히 일치하는 ID 발견!`);
+                            } else if (id?.includes('recitOSncYZmkik')) {
+                                console.log(`   🔍 유사한 ID: "${id}"`);
+                            }
+                        });
+                        if (postIds.length > 10) {
+                            console.log(`   ... 총 ${postIds.length}개 Post ID 존재`);
+                        }
+                    }
                     
                     if (medicontentPost) {
                         medicontentRecordId = medicontentPost.id; // Medicontent Posts record ID
@@ -94,20 +131,36 @@ async function sendToInputAgent(data: any, isUpdate: boolean = false) {
                         console.log(`   - Post Id: ${medicontentPostId}`);
                         
                         // 2. Post Data Requests에서 attachment 데이터 가져오기 (이미지용)
-                        const postDataRequestId = data.postId;
-                        const postDataRequest = await AirtableService.getDataRequestById(postDataRequestId);
-                        console.log(`🔍 2단계: Post Data Requests attachment 조회:`, postDataRequest);
-                        
-                        if (postDataRequest) {
+                        // ✅ DB 저장 완료 후 호출되므로 실제 URL 포함된 attachment 데이터 조회 가능
+                        console.log(`🔍 2단계: DB에서 저장된 실제 attachment 데이터 조회`);
+                        try {
+                            const savedDataRequest = await AirtableService.getDataRequest(data.postId);
+                            if (savedDataRequest && savedDataRequest.beforeImages) {
+                                actualImageData = {
+                                    beforeImages: savedDataRequest.beforeImages || [],
+                                    processImages: savedDataRequest.processImages || [],
+                                    afterImages: savedDataRequest.afterImages || []
+                                };
+                                console.log(`✅ DB에서 실제 attachment 데이터 조회 성공:`, actualImageData);
+                            } else {
+                                // fallback: 전달받은 데이터 사용 (ID만 있는 상태)
+                                console.log(`⚠️ DB에서 attachment 데이터 조회 실패, 전달받은 데이터 사용`);
+                                actualImageData = {
+                                    beforeImages: data.beforeImages || [],
+                                    processImages: data.processImages || [],
+                                    afterImages: data.afterImages || []
+                                };
+                            }
+                        } catch (attachmentError) {
+                            console.warn('⚠️ attachment 데이터 조회 실패:', attachmentError);
+                            // fallback: 전달받은 데이터 사용
                             actualImageData = {
-                                beforeImages: postDataRequest.beforeImages || [],
-                                processImages: postDataRequest.processImages || [],
-                                afterImages: postDataRequest.afterImages || []
+                                beforeImages: data.beforeImages || [],
+                                processImages: data.processImages || [],
+                                afterImages: data.afterImages || []
                             };
-                            console.log(`🔍 actualImageData:`, actualImageData);
-                        } else {
-                            console.warn('⚠️ Post Data Requests를 찾을 수 없음 (attachment 조회 실패)');
                         }
+                        console.log(`🔍 최종 actualImageData:`, actualImageData);
                     } else {
                         console.error('❌ UI postId로 Medicontent Posts를 찾을 수 없음:', data.postId);
                     }
@@ -158,166 +211,80 @@ async function sendToInputAgent(data: any, isUpdate: boolean = false) {
             category: postData?.treatmentType || "임플란트",
             question1_concept: data.conceptMessage || "",
             question2_condition: data.patientCondition || "", 
-            question3_visit_images: (data.beforeImages || []).map((img: string, index: number) => {
-                const attachments = Array.isArray(actualImageData?.beforeImages) ? actualImageData.beforeImages : [];
-                
-                // attachment 찾기 - img가 ID가 아닐 수도 있으므로 여러 방법으로 시도
-                let attachment = attachments.find((att: any) => att.id === img);
-                if (!attachment) {
-                    // ID로 찾지 못하면 filename이나 name으로 찾기 시도
-                    attachment = attachments.find((att: any) => 
-                        att.filename === img || att.name === img || 
-                        att.url?.includes(img) || att.url?.endsWith(img)
-                    );
+            question3_visit_images: (() => {
+                // actualImageData가 있으면 (Airtable에서 조회한 완전한 객체들)
+                if (actualImageData?.beforeImages && Array.isArray(actualImageData.beforeImages)) {
+                    const descriptions = splitImageDescriptions(data.beforeImagesText || "", actualImageData.beforeImages.length);
+                    return actualImageData.beforeImages.map((attachment: any, index: number) => ({
+                        id: attachment.id,
+                        filename: attachment.filename || attachment.name || attachment.id,
+                        url: attachment.url,
+                        description: descriptions[index] || "",
+                        path: attachment.url || `test_data/test_image/${attachment.id}`
+                    }));
                 }
-                
-                console.log('🔍 beforeImages attachment 검색:', { 
-                    searchTerm: img, 
-                    foundAttachment: attachment,
-                    allAttachments: attachments.map(a => ({ 
-                        id: a?.id, 
-                        filename: a?.filename, 
-                        name: a?.name,
-                        url: a?.url 
-                    })) 
+                // fallback: 기존 로직
+                return (data.beforeImages || []).map((imgId: string, index: number) => {
+                    const descriptions = splitImageDescriptions(data.beforeImagesText || "", data.beforeImages?.length || 0);
+                    return {
+                        id: imgId,
+                        filename: imgId,
+                        url: null,
+                        description: descriptions[index] || "",
+                        path: `test_data/test_image/${imgId}`
+                    };
                 });
-                
-                const descriptions = splitImageDescriptions(data.beforeImagesText || "", data.beforeImages?.length || 0);
-                console.log('🔍 beforeImagesText 원본:', data.beforeImagesText);
-                console.log('🔍 분리된 descriptions:', descriptions);
-                console.log('🔍 현재 index:', index, '해당 description:', descriptions[index]);
-                
-                // filename 우선순위: filename > name > url에서 파일명 추출 > 원본 img 값
-                let finalFilename = img; // fallback
-                if (attachment) {
-                    if (attachment.filename) {
-                        finalFilename = attachment.filename;
-                    } else if (attachment.name) {
-                        finalFilename = attachment.name;
-                    } else if (attachment.url) {
-                        // URL에서 파일명 추출 시도
-                        const urlParts = attachment.url.split('/');
-                        const lastPart = urlParts[urlParts.length - 1];
-                        if (lastPart && lastPart.includes('.')) {
-                            finalFilename = lastPart;
-                        }
-                    }
-                } else {
-                    // attachment를 찾지 못한 경우, img 자체가 파일명일 수 있음
-                    console.log('⚠️ attachment를 찾지 못함, img 값을 파일명으로 사용:', img);
-                }
-                
-                console.log('🔍 최종 filename:', finalFilename);
-                
-                return {
-                    filename: finalFilename,
-                    description: descriptions[index] || ""
-                };
-            }),
+            })(),
             question4_treatment: data.treatmentProcessMessage || "",
-            question5_therapy_images: (data.processImages || []).map((img: string, index: number) => {
-                const attachments = Array.isArray(actualImageData?.processImages) ? actualImageData.processImages : [];
-                
-                // attachment 찾기 - img가 ID가 아닐 수도 있으므로 여러 방법으로 시도
-                let attachment = attachments.find((att: any) => att.id === img);
-                if (!attachment) {
-                    attachment = attachments.find((att: any) => 
-                        att.filename === img || att.name === img || 
-                        att.url?.includes(img) || att.url?.endsWith(img)
-                    );
+            question5_therapy_images: (() => {
+                // actualImageData가 있으면 (Airtable에서 조회한 완전한 객체들)
+                if (actualImageData?.processImages && Array.isArray(actualImageData.processImages)) {
+                    const descriptions = splitImageDescriptions(data.processImagesText || "", actualImageData.processImages.length);
+                    return actualImageData.processImages.map((attachment: any, index: number) => ({
+                        id: attachment.id,
+                        filename: attachment.filename || attachment.name || attachment.id,
+                        url: attachment.url,
+                        description: descriptions[index] || "",
+                        path: attachment.url || `test_data/test_image/${attachment.id}`
+                    }));
                 }
-                
-                console.log('🔍 processImages attachment 검색:', { 
-                    searchTerm: img, 
-                    foundAttachment: attachment,
-                    allAttachments: attachments.map(a => ({ 
-                        id: a?.id, 
-                        filename: a?.filename, 
-                        name: a?.name,
-                        url: a?.url 
-                    })) 
+                // fallback: 기존 로직
+                return (data.processImages || []).map((imgId: string, index: number) => {
+                    const descriptions = splitImageDescriptions(data.processImagesText || "", data.processImages?.length || 0);
+                    return {
+                        id: imgId,
+                        filename: imgId,
+                        url: null,
+                        description: descriptions[index] || "",
+                        path: `test_data/test_image/${imgId}`
+                    };
                 });
-                
-                const descriptions = splitImageDescriptions(data.processImagesText || "", data.processImages?.length || 0);
-                console.log('🔍 processImagesText 원본:', data.processImagesText);
-                console.log('🔍 분리된 descriptions:', descriptions);
-                console.log('🔍 현재 index:', index, '해당 description:', descriptions[index]);
-                
-                // filename 우선순위: filename > name > url에서 파일명 추출 > 원본 img 값
-                let finalFilename = img; // fallback
-                if (attachment) {
-                    if (attachment.filename) {
-                        finalFilename = attachment.filename;
-                    } else if (attachment.name) {
-                        finalFilename = attachment.name;
-                    } else if (attachment.url) {
-                        const urlParts = attachment.url.split('/');
-                        const lastPart = urlParts[urlParts.length - 1];
-                        if (lastPart && lastPart.includes('.')) {
-                            finalFilename = lastPart;
-                        }
-                    }
-                } else {
-                    console.log('⚠️ attachment를 찾지 못함, img 값을 파일명으로 사용:', img);
-                }
-                
-                return {
-                    filename: finalFilename,
-                    description: descriptions[index] || ""
-                };
-            }),
+            })(),
             question6_result: data.treatmentResultMessage || "",
-            question7_result_images: (data.afterImages || []).map((img: string, index: number) => {
-                const attachments = Array.isArray(actualImageData?.afterImages) ? actualImageData.afterImages : [];
-                
-                // attachment 찾기 - img가 ID가 아닐 수도 있으므로 여러 방법으로 시도
-                let attachment = attachments.find((att: any) => att.id === img);
-                if (!attachment) {
-                    attachment = attachments.find((att: any) => 
-                        att.filename === img || att.name === img || 
-                        att.url?.includes(img) || att.url?.endsWith(img)
-                    );
+            question7_result_images: (() => {
+                // actualImageData가 있으면 (Airtable에서 조회한 완전한 객체들)
+                if (actualImageData?.afterImages && Array.isArray(actualImageData.afterImages)) {
+                    const descriptions = splitImageDescriptions(data.afterImagesText || "", actualImageData.afterImages.length);
+                    return actualImageData.afterImages.map((attachment: any, index: number) => ({
+                        id: attachment.id,
+                        filename: attachment.filename || attachment.name || attachment.id,
+                        url: attachment.url,
+                        description: descriptions[index] || "",
+                        path: attachment.url || `test_data/test_image/${attachment.id}`
+                    }));
                 }
-                
-                console.log('🔍 afterImages attachment 검색:', { 
-                    searchTerm: img, 
-                    foundAttachment: attachment,
-                    allAttachments: attachments.map(a => ({ 
-                        id: a?.id, 
-                        filename: a?.filename, 
-                        name: a?.name,
-                        url: a?.url 
-                    })) 
+                // fallback: 기존 로직
+                return (data.afterImages || []).map((imgId: string, index: number) => {
+                    const descriptions = splitImageDescriptions(data.afterImagesText || "", data.afterImages?.length || 0);
+                    return {
+                        id: imgId,
+                        filename: imgId,
+                        url: null,
+                        description: descriptions[index] || "",
+                        path: `test_data/test_image/${imgId}`
+                    };
                 });
-                
-                const descriptions = splitImageDescriptions(data.afterImagesText || "", data.afterImages?.length || 0);
-                console.log('🔍 afterImagesText 원본:', data.afterImagesText);
-                console.log('🔍 분리된 descriptions:', descriptions);
-                console.log('🔍 현재 index:', index, '해당 description:', descriptions[index]);
-                
-                // filename 우선순위: filename > name > url에서 파일명 추출 > 원본 img 값
-                let finalFilename = img; // fallback
-                if (attachment) {
-                    if (attachment.filename) {
-                        finalFilename = attachment.filename;
-                    } else if (attachment.name) {
-                        finalFilename = attachment.name;
-                    } else if (attachment.url) {
-                        const urlParts = attachment.url.split('/');
-                        const lastPart = urlParts[urlParts.length - 1];
-                        if (lastPart && lastPart.includes('.')) {
-                            finalFilename = lastPart;
-                        }
-                    }
-                } else {
-                    console.log('⚠️ attachment를 찾지 못함, img 값을 파일명으로 사용:', img);
-                }
-                
-                return {
-                    filename: finalFilename,
-                    description: descriptions[index] || ""
-                };
-            }),
+            })(),
             question8_extra: data.additionalMessage || "",
             include_tooth_numbers: false,
             tooth_numbers: [],
@@ -334,42 +301,146 @@ async function sendToInputAgent(data: any, isUpdate: boolean = false) {
             isFinalSave: data.isFinalSave || false // 최종 저장 여부 플래그
         };
 
-        // FastAPI medicontent generate 엔드포인트 호출
-        console.log('🚀 FastAPI 호출 시작:', `${fastApiUrl}/api/medicontent/generate`);
-        console.log('📤 전송할 데이터 크기:', JSON.stringify(inputAgentData).length);
+        // 모드에 따른 FastAPI 엔드포인트 및 데이터 구조 결정
+        let endpoint: string;
+        let requestData: any;
         
-        // FastAPI가 기대하는 데이터 구조로 변환
-        const fastApiRequest = {
-            input_data: inputAgentData,
-            options: {
-                async: false,
-                steps: ["plan", "title", "content", "evaluate"],
-                evaluation_mode: "medical"
+        if (mode === 'all-agents') {
+            // 🚀 실사용: 전체 워크플로우 /api/all-agents
+            endpoint = `${fastApiUrl}/api/all-agents`;
+            console.log('🚀 FastAPI 호출 시작 (실사용 - 전체 워크플로우):', endpoint);
+            console.log('🔍 DB에서 저장된 데이터를 다시 읽어와서 all-agents에 전달');
+            
+            // ✅ DB에서 실제 저장된 데이터 재조회
+            let savedDataFromDB = null;
+            try {
+                // medicontentPostId가 있으면 그것으로 조회, 없으면 원본 data.postId로 시도
+                const searchPostId = medicontentPostId || data.postId;
+                if (searchPostId) {
+                    // Post Data Requests에서 저장된 데이터 조회 (Post ID로)
+                    console.log(`🔍 최신 Post Data Requests 조회 시도: ${searchPostId}`);
+                    const savedDataRequest = await AirtableService.getDataRequest(searchPostId);
+                    if (savedDataRequest) {
+                        savedDataFromDB = {
+                            postId: savedDataRequest.postId || data.postId,
+                            conceptMessage: savedDataRequest.conceptMessage || "",
+                            patientCondition: savedDataRequest.patientCondition || "",
+                            treatmentProcessMessage: savedDataRequest.treatmentProcessMessage || "",
+                            treatmentResultMessage: savedDataRequest.treatmentResultMessage || "",
+                            additionalMessage: savedDataRequest.additionalMessage || "",
+                            beforeImages: savedDataRequest.beforeImages || [],
+                            processImages: savedDataRequest.processImages || [],
+                            afterImages: savedDataRequest.afterImages || [],
+                            beforeImagesText: savedDataRequest.beforeImagesText || "",
+                            processImagesText: savedDataRequest.processImagesText || "",
+                            afterImagesText: savedDataRequest.afterImagesText || ""
+                        };
+                        console.log('✅ DB에서 저장된 데이터 조회 성공:', savedDataFromDB);
+                    } else {
+                        console.warn('⚠️ DB에서 데이터를 찾을 수 없어서 원본 데이터 사용');
+                    }
+                }
+            } catch (dbError) {
+                console.warn('⚠️ DB 데이터 재조회 실패, 원본 데이터 사용:', dbError);
             }
-        };
-        
-        const response = await fetch(`${fastApiUrl}/api/input-agent`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(fastApiRequest)
-        });
-
-        console.log('📡 FastAPI 응답 상태:', response.status, response.statusText);
-
-        if (response.ok) {
-            const result = await response.json();
-            console.log('✅ FastAPI medicontent generate 전송 성공:', result);
-            return result;
+            
+            // ContentGenerationRequest 구조로 변환 (DB 데이터 우선, fallback으로 원본 데이터)
+            const dataSource = savedDataFromDB || data;
+            requestData = {
+                postId: dataSource.postId || "",
+                conceptMessage: dataSource.conceptMessage || "",
+                patientCondition: dataSource.patientCondition || "",
+                treatmentProcessMessage: dataSource.treatmentProcessMessage || "",
+                treatmentResultMessage: dataSource.treatmentResultMessage || "",
+                additionalMessage: dataSource.additionalMessage || "",
+                beforeImages: dataSource.beforeImages || [],
+                processImages: dataSource.processImages || [],
+                afterImages: dataSource.afterImages || [],
+                beforeImagesText: dataSource.beforeImagesText || "",
+                processImagesText: dataSource.processImagesText || "",
+                afterImagesText: dataSource.afterImagesText || ""
+            };
+        } else if (mode === 'half-agents') {
+            // 🧪 테스트용: plan→title→content→evaluation /api/half-agents
+            endpoint = `${fastApiUrl}/api/half-agents`;
+            console.log('🚀 FastAPI 호출 시작 (테스트용 - half-agents):', endpoint);
+            
+            // dict 구조 (최신 input_log 사용 or 특정 로그 선택)
+            requestData = {
+                mode: "use",
+                input_data: null,  // 최신 input_log 자동 사용
+                
+                // ✨ 특정 로그 선택 옵션 (UI에서 전달받을 수 있도록 확장)
+                target_case_id: data.targetCaseId || null,    // 특정 case_id 지정
+                target_post_id: data.targetPostId || null,    // 특정 postId 지정  
+                target_date: data.targetDate || null,         // 특정 날짜 지정 (YYYYMMDD)
+                target_log_path: data.targetLogPath || null   // 직접 로그 파일 경로 지정
+            };
         } else {
-            const errorText = await response.text();
-            console.error('❌ FastAPI medicontent generate 전송 실패:', response.statusText);
-            console.error('❌ FastAPI 에러 응답:', errorText);
-            throw new Error(`FastAPI 응답 실패: ${response.status} - ${response.statusText}`);
+            // 🔄 테스트용: Input 에이전트만 /api/input-agent  
+            endpoint = `${fastApiUrl}/api/input-agent`;
+            console.log('🚀 FastAPI 호출 시작 (테스트용 - input 전용):', endpoint);
+            
+            // input_data로 래핑
+            requestData = {
+                input_data: inputAgentData,
+                options: {
+                    async: false,
+                    steps: ["plan", "title", "content", "evaluate"],
+                    evaluation_mode: "medical"
+                }
+            };
+        }
+        
+        console.log('📤 전송할 데이터 크기:', JSON.stringify(requestData).length);
+        
+        // AbortController로 타임아웃 제어 (2분)
+        const abortController = new AbortController();
+        const timeoutId = setTimeout(() => {
+            abortController.abort();
+        }, 120000); // 2분 타임아웃
+        
+        try {
+            const response = await fetch(endpoint, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(requestData),
+                signal: abortController.signal
+            });
+            
+            clearTimeout(timeoutId);
+
+            console.log('📡 FastAPI 응답 상태:', response.status, response.statusText);
+
+            if (response.ok) {
+                const result = await response.json();
+                console.log(`✅ FastAPI ${mode} 모드 전송 성공:`, result);
+                return result;
+            } else {
+                const errorText = await response.text();
+                console.error(`❌ FastAPI ${mode} 모드 전송 실패:`, response.statusText);
+                console.error('❌ FastAPI 에러 응답:', errorText);
+                throw new Error(`FastAPI 응답 실패: ${response.status} - ${response.statusText}`);
+            }
+        } catch (error) {
+            clearTimeout(timeoutId);
+            
+            // 타임아웃 에러 구분 처리
+            if ((error as Error).name === 'AbortError') {
+                console.error(`⏰ FastAPI ${mode} 모드 타임아웃 (2분 초과):`, error);
+                throw new Error(`FastAPI 요청이 타임아웃되었습니다 (2분 초과)`);
+            } else if (String(error).includes('Headers Timeout Error')) {
+                console.error(`⏰ FastAPI ${mode} 모드 헤더 타임아웃:`, error);
+                throw new Error(`FastAPI 연결에서 헤더 타임아웃이 발생했습니다`);
+            } else {
+                console.error(`❌ FastAPI ${mode} 모드 전송 오류:`, error);
+                throw error;
+            }
         }
     } catch (error) {
-        console.error('❌ FastAPI medicontent generate 전송 오류:', error);
+        console.error(`❌ sendToFastAPI 함수 실행 오류:`, error);
         throw error;
     }
 }
@@ -442,9 +513,26 @@ export async function POST(request: NextRequest) {
         let actualMedicontentRecordId = null;
         try {
             if (postId) {
-                // postId를 직접 record ID로 사용 (단순화)
-                const recordId = postId;
-                const medicontentPost = await AirtableService.getPost(recordId);
+                // 받은 ID가 record ID인지 Post ID인지 판단해서 적절한 함수 사용 (POST)
+                console.log(`🔍 POST: 받은 ID로 Medicontent Posts 조회: ${postId}`);
+                
+                let medicontentPost;
+                if (postId.startsWith('post_')) {
+                    // Post ID 형태인 경우 getPostByPostId 사용
+                    console.log(`🔍 POST: Post ID 형태 감지, getPostByPostId 사용`);
+                    medicontentPost = await AirtableService.getPostByPostId(postId);
+                } else if (postId.startsWith('rec')) {
+                    // Record ID 형태인 경우 getPost 사용
+                    console.log(`🔍 POST: Record ID 형태 감지, getPost 사용`);
+                    medicontentPost = await AirtableService.getPost(postId);
+                } else {
+                    // 알 수 없는 형태인 경우 둘 다 시도
+                    console.log(`🔍 POST: 알 수 없는 ID 형태, 두 방법 모두 시도`);
+                    medicontentPost = await AirtableService.getPostByPostId(postId);
+                    if (!medicontentPost) {
+                        medicontentPost = await AirtableService.getPost(postId);
+                    }
+                }
                 if (medicontentPost) {
                     actualMedicontentPostId = medicontentPost.postId; // 실제 Post Id 필드 값
                     actualMedicontentRecordId = medicontentPost.id; // record ID
@@ -474,20 +562,39 @@ export async function POST(request: NextRequest) {
         // 2. FastAPI input_agent에 실제 테이블별 Post ID들과 함께 데이터 전달
         const dataWithRealPostIds = {
             ...dataToSubmit,
+            postId: actualPostDataRequestPostIdFull || actualMedicontentPostId || postId, // ✅ 실제 Post Id 사용
             actualPostDataRequestPostId, // Post Data Requests의 record ID (recXXXXX)
             actualPostDataRequestPostIdFull, // Post Data Requests의 full ID (post_recXXXXX)
             actualMedicontentPostId, // Medicontent Posts의 실제 Post Id
-            actualMedicontentRecordId // Medicontent Posts의 record ID
+            actualMedicontentRecordId, // Medicontent Posts의 record ID
+            
+            // ✨ UI에서 전달받을 수 있는 추가 옵션들
+            mode: body.mode || null,                    // 실행 모드 선택
+            targetCaseId: body.targetCaseId || null,    // 특정 case_id 지정
+            targetPostId: body.targetPostId || null,    // 특정 postId 지정
+            targetDate: body.targetDate || null,        // 특정 날짜 지정
+            targetLogPath: body.targetLogPath || null   // 직접 로그 파일 경로 지정
         };
         
         try {
-            const inputAgentResult = await sendToInputAgent(dataWithRealPostIds);
-            console.log('✅ FastAPI medicontent generate 등록 완료');
+            // 🔧 1단계: 먼저 input-only로 로그 생성
+            console.log(`🎯 1단계: input-only 모드로 입력 로그 생성`);
+            const inputResult = await sendToFastAPI(dataWithRealPostIds, false, 'input-only');
+            console.log(`✅ FastAPI input-only 모드 완료`);
+            
+            // 🔧 2단계: all-agents로 전체 파이프라인 실행 (입력 로그 기반)
+            const mode = dataWithRealPostIds.mode || 'all-agents';
+            if (mode !== 'input-only') {
+                console.log(`🎯 2단계: ${mode} 모드로 전체 파이프라인 실행`);
+                const fastApiResult = await sendToFastAPI(dataWithRealPostIds, false, mode);
+                console.log(`✅ FastAPI ${mode} 모드 완료`);
+            }
             
             return NextResponse.json({ 
                 message: '자료 요청이 제출되었습니다.',
                 airtable: '저장 완료',
-                medicontent: '등록 완료'
+                medicontent: `input-only → ${mode} 단계별 파이프라인 완료`,
+                fastapi: `input-only + ${mode} 모드 실행 완료`
             });
         } catch (fastApiError) {
             // FastAPI 전송 실패해도 Airtable은 저장된 상태이므로 부분 성공으로 처리
@@ -599,9 +706,26 @@ export async function PUT(request: NextRequest) {
         let actualMedicontentRecordId = null;
         try {
             if (postId) {
-                // postId를 직접 record ID로 사용 (단순화)
-                const recordId = postId;
-                const medicontentPost = await AirtableService.getPost(recordId);
+                // 받은 ID가 record ID인지 Post ID인지 판단해서 적절한 함수 사용 (PUT)
+                console.log(`🔍 PUT: 받은 ID로 Medicontent Posts 조회: ${postId}`);
+                
+                let medicontentPost;
+                if (postId.startsWith('post_')) {
+                    // Post ID 형태인 경우 getPostByPostId 사용
+                    console.log(`🔍 PUT: Post ID 형태 감지, getPostByPostId 사용`);
+                    medicontentPost = await AirtableService.getPostByPostId(postId);
+                } else if (postId.startsWith('rec')) {
+                    // Record ID 형태인 경우 getPost 사용
+                    console.log(`🔍 PUT: Record ID 형태 감지, getPost 사용`);
+                    medicontentPost = await AirtableService.getPost(postId);
+                } else {
+                    // 알 수 없는 형태인 경우 둘 다 시도
+                    console.log(`🔍 PUT: 알 수 없는 ID 형태, 두 방법 모두 시도`);
+                    medicontentPost = await AirtableService.getPostByPostId(postId);
+                    if (!medicontentPost) {
+                        medicontentPost = await AirtableService.getPost(postId);
+                    }
+                }
                 if (medicontentPost) {
                     actualMedicontentPostId = medicontentPost.postId; // 실제 Post Id 필드 값
                     actualMedicontentRecordId = medicontentPost.id; // record ID
@@ -631,20 +755,39 @@ export async function PUT(request: NextRequest) {
         // 2. FastAPI input_agent에 실제 테이블별 Post ID들과 함께 업데이트된 데이터 전달
         const dataWithRealPostIds = {
             ...dataToUpdate,
+            postId: actualPostDataRequestPostIdFull || actualMedicontentPostId || dataToUpdate.postId, // ✅ 실제 Post Id 사용
             actualPostDataRequestPostId, // Post Data Requests의 record ID (recXXXXX)
             actualPostDataRequestPostIdFull, // Post Data Requests의 full ID (post_recXXXXX)
             actualMedicontentPostId, // Medicontent Posts의 실제 Post Id
-            actualMedicontentRecordId // Medicontent Posts의 record ID
+            actualMedicontentRecordId, // Medicontent Posts의 record ID
+            
+            // ✨ UI에서 전달받을 수 있는 추가 옵션들 (PUT)
+            mode: body.mode || null,                    // 실행 모드 선택
+            targetCaseId: body.targetCaseId || null,    // 특정 case_id 지정
+            targetPostId: body.targetPostId || null,    // 특정 postId 지정
+            targetDate: body.targetDate || null,        // 특정 날짜 지정
+            targetLogPath: body.targetLogPath || null   // 직접 로그 파일 경로 지정
         };
         
         try {
-            const inputAgentResult = await sendToInputAgent(dataWithRealPostIds, true); // 업데이트 모드로 호출
-            console.log('✅ FastAPI medicontent generate 업데이트 완료');
+            // 🔧 1단계: 먼저 input-only로 로그 생성 (PUT)
+            console.log(`🎯 1단계: input-only 모드로 입력 로그 생성 (PUT)`);
+            const inputResult = await sendToFastAPI(dataWithRealPostIds, true, 'input-only'); // 업데이트 모드
+            console.log(`✅ FastAPI input-only 모드 완료 (PUT)`);
+            
+            // 🔧 2단계: all-agents로 전체 파이프라인 실행 (입력 로그 기반)
+            const mode = dataWithRealPostIds.mode || 'all-agents';
+            if (mode !== 'input-only') {
+                console.log(`🎯 2단계: ${mode} 모드로 전체 파이프라인 실행 (PUT)`);
+                const fastApiResult = await sendToFastAPI(dataWithRealPostIds, true, mode); // 업데이트 모드
+                console.log(`✅ FastAPI ${mode} 모드 완료 (PUT)`);
+            }
             
             return NextResponse.json({ 
                 message: '자료 요청이 업데이트되었습니다.',
                 airtable: '업데이트 완료',
-                medicontent: '업데이트 완료'
+                medicontent: `input-only → ${mode} 단계별 파이프라인 완료`,
+                fastapi: `input-only + ${mode} 모드 실행 완료`
             });
         } catch (fastApiError) {
             console.warn('⚠️ FastAPI 업데이트 실패, Airtable만 업데이트됨:', fastApiError);

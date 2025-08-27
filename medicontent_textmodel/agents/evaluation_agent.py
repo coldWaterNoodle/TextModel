@@ -219,73 +219,101 @@ def auto_update_medicontent_posts(evaluation_data: Dict[str, Any], evaluation_fi
         is_legal_score = criteria in ["엄격", "표준", "유연"]
         is_seo_score = criteria in ["우수", "양호", "보통"]
         
-        # PostID 기반 매칭으로 content.json 찾기 (최신 파일 우선)
+        # PostID 기반 매칭으로 content.json 찾기 (기존/새로운 경로 구조 모두 고려)
         eval_dir = Path(evaluation_file_path).parent
-        search_dirs = [eval_dir, eval_dir.parent, eval_dir.parent.parent]
+        base_use_dir = ROOT / "test_logs" / "use"
+        
+        search_dirs = [
+            eval_dir,  # 현재 evaluation 파일이 있는 폴더
+            eval_dir.parent if eval_dir.parent != base_use_dir else eval_dir,  # 상위 폴더
+            base_use_dir,  # test_logs/use/
+            base_use_dir / "results",  # 기존 results/ 폴더
+        ]
+        
+        # 모든 날짜 폴더들도 추가 (YYYYMMDD 형태)
+        if base_use_dir.exists():
+            for date_dir in base_use_dir.iterdir():
+                if date_dir.is_dir() and date_dir.name.isdigit() and len(date_dir.name) == 8:
+                    search_dirs.append(date_dir)
+        
+        # results 폴더의 모든 날짜/타임스탬프 폴더들도 추가
+        results_dir = base_use_dir / "results" 
+        if results_dir.exists():
+            for sub_dir in results_dir.iterdir():
+                if sub_dir.is_dir():
+                    search_dirs.append(sub_dir)
         
         content_file = None
         matched_post_id = None
         
         # 모든 디렉토리에서 content.json 파일들 스캔 (최신순)
+        all_content_files = []
         for search_dir in search_dirs:
-            content_files = sorted(list(search_dir.glob("**/*_content.json")), key=lambda x: x.stat().st_mtime, reverse=True)
-            
-            for cf in content_files:
-                try:
-                    with open(cf, 'r', encoding='utf-8') as f:
-                        content_data = json.load(f)
-                    
-                    # content.json에서 input_source 추출
-                    input_source = content_data.get("meta", {}).get("input_source", "")
-                    if not input_source:
-                        continue
-                    
-                    # input_source 경로를 절대 경로로 변환
-                    if not Path(input_source).is_absolute():
-                        input_file = ROOT / input_source
-                    else:
-                        input_file = Path(input_source)
-                    
-                    if not input_file.exists():
-                        continue
-                    
-                    # input_source에서 PostID 추출
-                    with open(input_file, 'r', encoding='utf-8') as f:
-                        input_logs = json.load(f)
-                    
-                    # PostID 추출 로직
-                    post_id = None
-                    if isinstance(input_logs, list) and input_logs:
-                        for log_entry in input_logs:
-                            if isinstance(log_entry, dict):
-                                for key in ['actualPostDataRequestPostIdFull', 'medicontentPostId', 'postId']:
-                                    if key in log_entry and log_entry[key]:
-                                        post_id = str(log_entry[key])
-                                        if not post_id.startswith('post_'):
-                                            post_id = f"post_{post_id}"
-                                        break
-                                if post_id:
-                                    break
-                    elif isinstance(input_logs, dict):
-                        for key in ['actualPostDataRequestPostIdFull', 'medicontentPostId', 'postId']:
-                            if key in input_logs and input_logs[key]:
-                                post_id = str(input_logs[key])
-                                if not post_id.startswith('post_'):
-                                    post_id = f"post_{post_id}"
-                                break
-                    
-                    if post_id:
-                        content_file = cf
-                        matched_post_id = post_id
-                        print(f"✅ PostID 기반 Content 파일 발견: {content_file}")
-                        print(f"🔍 추출된 PostID: {matched_post_id}")
-                        break
-                        
-                except Exception as e:
+            if search_dir.exists():
+                if "**" in str(search_dir):
+                    # 특별한 glob 패턴 처리
+                    base_dir = search_dir.parent
+                    if base_dir.exists():
+                        all_content_files.extend(list(base_dir.glob("**/*_content.json")))
+                else:
+                    all_content_files.extend(list(search_dir.glob("**/*_content.json")))
+        
+        # 중복 제거 및 최신순 정렬
+        content_files = sorted(list(set(all_content_files)), key=lambda x: x.stat().st_mtime, reverse=True)
+        
+        for cf in content_files:
+            try:
+                with open(cf, 'r', encoding='utf-8') as f:
+                    content_data = json.load(f)
+                
+                # content.json에서 input_source 추출
+                input_source = content_data.get("meta", {}).get("input_source", "")
+                if not input_source:
                     continue
-            
-            if content_file:
-                break
+                
+                # input_source 경로를 절대 경로로 변환
+                if not Path(input_source).is_absolute():
+                    input_file = ROOT / input_source
+                else:
+                    input_file = Path(input_source)
+                
+                if not input_file.exists():
+                    continue
+                
+                # input_source에서 PostID 추출
+                with open(input_file, 'r', encoding='utf-8') as f:
+                    input_logs = json.load(f)
+                
+                # PostID 추출 로직
+                post_id = None
+                if isinstance(input_logs, list) and input_logs:
+                    for log_entry in input_logs:
+                        if isinstance(log_entry, dict):
+                            for key in ['actualPostDataRequestPostIdFull', 'medicontentPostId', 'postId']:
+                                if key in log_entry and log_entry[key]:
+                                    post_id = str(log_entry[key])
+                                    if not post_id.startswith('post_'):
+                                        post_id = f"post_{post_id}"
+                                    break
+                            if post_id:
+                                break
+                elif isinstance(input_logs, dict):
+                    for key in ['actualPostDataRequestPostIdFull', 'medicontentPostId', 'postId']:
+                        if key in input_logs and input_logs[key]:
+                            post_id = str(input_logs[key])
+                            if not post_id.startswith('post_'):
+                                post_id = f"post_{post_id}"
+                            break
+                
+                if post_id:
+                    content_file = cf
+                    matched_post_id = post_id
+                    print(f"✅ PostID 기반 Content 파일 발견: {content_file}")
+                    print(f"🔍 추출된 PostID: {matched_post_id}")
+                    break
+                    
+            except Exception as e:
+                continue
         
         if not content_file or not matched_post_id:
             print("⚠️ PostID를 추출할 수 있는 content.json을 찾을 수 없습니다.")
@@ -370,11 +398,18 @@ def auto_update_medicontent_posts(evaluation_data: Dict[str, Any], evaluation_fi
             current_fields = matched_record['fields']
             existing_seo_score = current_fields.get('SEO Score')
             existing_legal_score = current_fields.get('Legal Score')
+            current_status = current_fields.get('Status', '')
+            
+            print(f"📊 현재 레코드 상태:")
+            print(f"   기존 SEO Score: {existing_seo_score} ({'있음' if existing_seo_score else '없음'})")
+            print(f"   기존 Legal Score: {existing_legal_score} ({'있음' if existing_legal_score else '없음'})")
+            print(f"   현재 Status: '{current_status}'")
+            print(f"🔍 이번 평가 타입 - is_seo_score: {is_seo_score}, is_legal_score: {is_legal_score}")
             
             # HTML ID 생성 (content 파일명에서 추출)
             html_id = content_file.stem  # ex: 20250825_205923_content
             
-            # 업데이트할 데이터 준비
+            # 업데이트할 데이터 준비 (Status는 나중에 결정)
             update_data = {
                 'HTML ID': html_id
             }
@@ -396,15 +431,22 @@ def auto_update_medicontent_posts(evaluation_data: Dict[str, Any], evaluation_fi
                 update_data['Legal Score'] = weighted_total
                 print(f"⚖️ Legal Score 설정: {weighted_total} (criteria: {criteria})")
             
-            # 둘 다 있을 때만 작업 완료로 변경
+            # 둘 다 있을 때만 작업 완료로 변경 (동시 평가 시에만 완료 처리)
             will_have_seo = existing_seo_score or is_seo_score
             will_have_legal = existing_legal_score or is_legal_score
             
+            print(f"🔄 Score 상태 확인:")
+            print(f"   기존 SEO Score: {existing_seo_score} ({'있음' if existing_seo_score else '없음'})")
+            print(f"   기존 Legal Score: {existing_legal_score} ({'있음' if existing_legal_score else '없음'})")
+            print(f"   이번에 추가할 SEO Score: {'있음' if is_seo_score else '없음'}")
+            print(f"   이번에 추가할 Legal Score: {'있음' if is_legal_score else '없음'}")
+            print(f"   결과 - will_have_seo: {will_have_seo}, will_have_legal: {will_have_legal}")
+            
             if will_have_seo and will_have_legal:
                 update_data['Status'] = '작업 완료'
-                print(f"✅ SEO Score와 Legal Score 모두 있음 → Status: 작업 완료")
+                print(f"✅ SEO Score와 Legal Score 모두 있음 → Status: '작업 완료'로 변경")
             else:
-                print(f"⏳ 아직 한쪽 Score만 있음 → Status 유지")
+                print(f"⏳ 아직 한쪽 Score만 있음 → Status 유지 ('{current_status}')")
                 print(f"   SEO Score: {'✅' if will_have_seo else '❌'}")
                 print(f"   Legal Score: {'✅' if will_have_legal else '❌'}")
             
@@ -420,7 +462,7 @@ def auto_update_medicontent_posts(evaluation_data: Dict[str, Any], evaluation_fi
                 checklist_json = ""
                 ui_log_path = ""
                 
-                # 해당 타임스탬프의 UI checklist 로그 찾기 (before/after/declined 패턴 지원)
+                # 해당 타임스탬프의 UI checklist 로그 찾기 (기존/새로운 구조 모두 지원)
                 eval_dir = Path(evaluation_file_path).parent
                 ui_patterns = []
                 
@@ -441,21 +483,34 @@ def auto_update_medicontent_posts(evaluation_data: Dict[str, Any], evaluation_fi
                         f"{timestamp}_legal_ui_checklist.json"
                     ]
                 
+                # UI checklist 파일을 찾을 검색 디렉토리들
+                ui_search_dirs = [
+                    eval_dir,  # 현재 폴더
+                    eval_dir.parent,  # 상위 폴더
+                    base_use_dir,  # test_logs/use/
+                    base_use_dir / "results",  # results/ 폴더
+                ]
+                
+                # 모든 날짜 폴더와 results의 하위 폴더들도 추가
+                if base_use_dir.exists():
+                    for date_dir in base_use_dir.iterdir():
+                        if date_dir.is_dir() and date_dir.name.isdigit() and len(date_dir.name) == 8:
+                            ui_search_dirs.append(date_dir)
+                
+                results_dir = base_use_dir / "results"
+                if results_dir.exists():
+                    for sub_dir in results_dir.iterdir():
+                        if sub_dir.is_dir():
+                            ui_search_dirs.append(sub_dir)
+                
                 ui_files = []
                 for pattern in ui_patterns:
-                    ui_files = list(eval_dir.glob(f"**/{pattern}"))
+                    for search_dir in ui_search_dirs:
+                        if search_dir.exists():
+                            found_files = list(search_dir.glob(pattern))
+                            ui_files.extend(found_files)
                     if ui_files:
                         break
-                    
-                    # 상위 디렉토리에서도 검색
-                    if not ui_files:
-                        parent_dirs = [eval_dir.parent, eval_dir.parent.parent]
-                        for parent_dir in parent_dirs:
-                            ui_files = list(parent_dir.glob(f"**/{pattern}"))
-                            if ui_files:
-                                break
-                        if ui_files:
-                            break
                 
                 if ui_files:
                     ui_file = ui_files[0]
@@ -577,7 +632,7 @@ BASE_PATTERNS = {
 # --- SEO 측정 전용: 이미지 감지+정제 ---
 _IMG_EXT_RE = r'(?:jpg|jpeg|png|gif)'
 _MKDOWN_IMG_RE = re.compile(r'!\[[^\]]*\]\(([^)]+)\)', re.IGNORECASE)   # ![alt](url)
-_HTML_IMG_RE   = re.compile(r'<img\b[^>]*>', re.IGNORECASE)             # <img ...>
+_HTML_IMG_RE   = re.compile(r'<img\b[^>]*\bsrc\s*=[^>]*>', re.IGNORECASE)  # <img src=""> 개수로 카운팅
 _PAREN_IMG_RE  = re.compile(r'\(([^()\s]+?\.' + _IMG_EXT_RE + r')\)', re.IGNORECASE)  # (file.ext)
 
 def _extract_images_and_clean_text(raw: str) -> Tuple[str, int]:
@@ -685,6 +740,18 @@ def calculate_seo_metrics(title: str, content: str) -> Dict[str, int]:
 def _nowstamp() -> str:
     return datetime.now().strftime("%Y%m%d_%H%M%S")
 
+def _ensure_timestamp_log_dir(base_log_dir: Path, timestamp: str = None) -> Path:
+    """날짜별 {YYYYMMDD} 디렉토리 생성"""
+    if timestamp is None:
+        timestamp = _nowstamp()
+    
+    # 타임스탬프에서 날짜 부분만 추출 (YYYYMMDD_HHMMSS -> YYYYMMDD)
+    date_part = timestamp.split('_')[0] if '_' in timestamp else timestamp[:8]
+    
+    date_dir = base_log_dir / date_part
+    date_dir.mkdir(parents=True, exist_ok=True)
+    return date_dir
+
 def _read_text(p: Path) -> str:
     if not p.exists():
         raise FileNotFoundError(f"파일 없음: {p}")
@@ -700,24 +767,42 @@ def _write_json(p: Path, obj: Any):
     p.write_text(json.dumps(obj, ensure_ascii=False, indent=2), encoding="utf-8")
 
 def _latest(log_dir: Path, glob_pat: Union[str, List[str]]) -> Path:
-    # log_dir 안의 최신 날짜 폴더 선택
-    date_dirs = [p for p in log_dir.iterdir() if p.is_dir()]
-    if not date_dirs:
-        raise FileNotFoundError(f"날짜 폴더를 찾을 수 없습니다: {log_dir}")
+    # log_dir가 날짜 폴더라면 그 안에서 직접 탐색, 아니면 최신 날짜 폴더 선택
+    if log_dir.name.isdigit() and len(log_dir.name) == 8:  # YYYYMMDD 형태인지 확인
+        search_dirs = [log_dir]
+    else:
+        search_dirs = []
+        
+        # 1. 날짜 폴더들 찾기 (YYYYMMDD)
+        date_dirs = [p for p in log_dir.iterdir() if p.is_dir() and p.name.isdigit() and len(p.name) == 8]
+        if date_dirs:
+            search_dirs.extend(date_dirs)
+        
+        # 2. results 폴더가 있으면 그 안의 폴더들도 확인
+        results_dir = log_dir / "results"
+        if results_dir.exists():
+            for sub_dir in results_dir.iterdir():
+                if sub_dir.is_dir():
+                    search_dirs.append(sub_dir)
+        
+        if not search_dirs:
+            raise FileNotFoundError(f"날짜 폴더를 찾을 수 없습니다: {log_dir}")
 
-    latest_date_dir = max(date_dirs, key=lambda d: d.stat().st_mtime)
-
-    # 그 안에서 glob 탐색
+    # 모든 검색 디렉토리에서 파일 찾기
     patterns = glob_pat if isinstance(glob_pat, list) else [glob_pat]
     candidates: List[Path] = []
-    for pat in patterns:
-        candidates.extend(list(latest_date_dir.glob(pat)))
+    
+    for search_dir in search_dirs:
+        for pat in patterns:
+            candidates.extend(list(search_dir.glob(pat)))
 
     if not candidates:
-        listing = "\n".join(sorted([p.name for p in latest_date_dir.glob('*')]))
+        # 첫 번째 검색 디렉토리의 파일 목록 표시
+        first_dir = search_dirs[0] if search_dirs else log_dir
+        listing = "\n".join(sorted([p.name for p in first_dir.glob('*')]))
         raise FileNotFoundError(
-            f"최신 파일을 찾을 수 없습니다: {latest_date_dir}/{patterns}\n"
-            f"현재 파일 목록:\n{listing if listing else '(비어 있음)'}"
+            f"최신 파일을 찾을 수 없습니다: {[str(d) for d in search_dirs]}/{patterns}\n"
+            f"첫 번째 디렉토리({first_dir}) 파일 목록:\n{listing if listing else '(비어 있음)'}"
         )
 
     candidates.sort(key=lambda x: x.stat().st_mtime, reverse=True)
@@ -1047,38 +1132,38 @@ def build_eval_prompt(title: str, content: str, prompt_path: Path = EVAL_PROMPT_
         # 각 항목별 정확한 점수 계산
         def get_correct_score(item_num, value):
             if item_num == 1:  # 제목 글자수 (공백 포함)
-                if 26 <= value <= 48: return 12
-                elif 49 <= value <= 69: return 9
-                elif 15 <= value <= 25: return 6
+                if 20 <= value <= 48: return 12
+                elif 49 <= value <= 69 or value > 69: return 9
+                elif 15 <= value <= 19: return 6
                 else: return 3
             elif item_num == 2:  # 제목 글자수 (공백 제외)
-                if 15 <= value <= 30: return 12
-                elif 31 <= value <= 56: return 9
-                elif 10 <= value <= 14: return 6
+                if 13 <= value <= 40: return 12
+                elif 41 <= value <= 56 or value > 56: return 9
+                elif 8 <= value <= 12: return 6
                 else: return 3
             elif item_num == 3:  # 본문 글자수 (공백 포함)
                 if 1233 <= value <= 2628: return 15
-                elif 2629 <= value <= 4113: return 12
+                elif 2629 <= value <= 4113 or value > 4113: return 12
                 elif 612 <= value <= 1232: return 9
                 else: return 5
             elif item_num == 4:  # 본문 글자수 (공백 제외)
                 if 936 <= value <= 1997: return 15
-                elif 1998 <= value <= 3400: return 12
+                elif 1998 <= value <= 3400 or value > 3400: return 12
                 elif 512 <= value <= 935: return 9
                 else: return 5
             elif item_num == 5:  # 총 형태소 개수
-                if 249 <= value <= 482: return 10
-                elif 483 <= value <= 672: return 8
-                elif 183 <= value <= 248: return 6
+                if 482 <= value <= 1692: return 10
+                elif 1693 <= value <= 2542 or value > 2542: return 8
+                elif 183 <= value <= 481: return 6
                 else: return 3
             elif item_num == 6:  # 총 음절 개수
-                if 298 <= value <= 632: return 10
-                elif 633 <= value <= 892: return 8
-                elif 184 <= value <= 297: return 6
+                if 789 <= value <= 1997: return 10
+                elif 1998 <= value <= 2986 or value > 2986: return 8
+                elif 184 <= value <= 788: return 6
                 else: return 3
             elif item_num == 7:  # 총 단어 개수
-                if 82 <= value <= 193: return 10
-                elif 194 <= value <= 284: return 8
+                if 82 <= value <= 892: return 10
+                elif 893 <= value <= 1342 or value > 1342: return 8
                 elif 54 <= value <= 81: return 6
                 else: return 3
             elif item_num == 8:  # 어뷰징 단어 개수
@@ -1194,19 +1279,19 @@ def regen_fit_score(before_over: List[int], after_over: List[int],
     }
 
 def get_seo_grade_by_actual_value(actual_value: int, item_num: int) -> str:
-    """실제 측정값을 기준으로 SEO 등급 판정 (A/B/C/D) - 양 끝값만 사용"""
+    """실제 측정값을 기준으로 SEO 등급 판정 (A/B/C/D) - 수정된 기준"""
     
     # content_evaluation_prompt.txt의 등급 기준 (min, max만 사용)
     grade_criteria = {
-        1: {'A': (26, 48), 'B': (49, 69), 'C': (15, 25), 'D': (0, 14)},        # 제목 글자수 (공백 포함)
-        2: {'A': (15, 30), 'B': (31, 56), 'C': (10, 14), 'D': (0, 9)},         # 제목 글자수 (공백 제외)
-        3: {'A': (1233, 2628), 'B': (2628, 4113), 'C': (612, 1232), 'D': (0, 611)},     # 본문 글자수 (공백 포함)
+        1: {'A': (20, 48), 'B': (49, 69), 'C': (15, 19), 'D': (0, 14)},        # 제목 글자수 (공백 포함)
+        2: {'A': (13, 40), 'B': (41, 56), 'C': (8, 12), 'D': (0, 7)},         # 제목 글자수 (공백 제외)
+        3: {'A': (1233, 2628), 'B': (2629, 4113), 'C': (612, 1232), 'D': (0, 611)},     # 본문 글자수 (공백 포함)
         4: {'A': (936, 1997), 'B': (1998, 3400), 'C': (512, 935), 'D': (0, 511)},       # 본문 글자수 (공백 제외)
-        5: {'A': (249, 482), 'B': (483, 672), 'C': (183, 248), 'D': (0, 182)},          # 총 형태소 개수
-        6: {'A': (298, 632), 'B': (633, 892), 'C': (184, 297), 'D': (0, 183)},          # 총 음절 개수
-        7: {'A': (82, 193), 'B': (194, 284), 'C': (54, 81), 'D': (0, 53)},              # 총 단어 개수
+        5: {'A': (482, 1692), 'B': (1693, 2542), 'C': (183, 481), 'D': (0, 182)},          # 총 형태소 개수
+        6: {'A': (789, 1997), 'B': (1998, 2986), 'C': (184, 788), 'D': (0, 183)},          # 총 음절 개수
+        7: {'A': (82, 892), 'B': (893, 1342), 'C': (54, 81), 'D': (0, 53)},              # 총 단어 개수
         8: {'A': (0, 7), 'B': (8, 15), 'C': (16, 20), 'D': (21, 25)},                   # 어뷰징 단어 개수
-        9: {'A': (3, 11), 'B': (12, 30), 'C': (30, 50), 'D': (0, 2)}                    # 본문 이미지
+        9: {'A': (3, 11), 'B': (12, 30), 'C': (31, 50), 'D': (0, 2)}                    # 본문 이미지
     }
     
     if item_num not in grade_criteria:
@@ -1286,9 +1371,10 @@ def run_single_mode(criteria_mode: str = "표준",
         report_path: Union[str, None] = None,
         evaluation_mode: str = "medical"):
 
-    # 로그 디렉토리
-    log_dir_path = Path(log_dir) if log_dir else DEFAULT_LOG_DIR
-    log_dir_path.mkdir(parents=True, exist_ok=True)
+    # 로그 디렉토리 (타임스탬프별 폴더 생성)
+    base_log_dir = Path(log_dir) if log_dir else DEFAULT_LOG_DIR
+    current_timestamp = _nowstamp()
+    log_dir_path = _ensure_timestamp_log_dir(base_log_dir, current_timestamp)
 
     # 탐색 패턴을 TXT 파일로 변경
     patterns = [p.strip() for p in (pattern.split(",") if pattern else []) if p.strip()]
@@ -1471,9 +1557,9 @@ def run_single_mode(criteria_mode: str = "표준",
 
             # 재생성 후 최종 평가 결과는 _after 접미사 추가
             if patched_once:
-                out_path = log_dir_path / f"{_nowstamp()}_evaluation_after.json"
+                out_path = log_dir_path / f"{current_timestamp}_evaluation_after.json"
             else:
-                out_path = log_dir_path / f"{_nowstamp()}_evaluation.json"
+                out_path = log_dir_path / f"{current_timestamp}_evaluation.json"
             _write_json(out_path, out)
             
             # ⭐ UI checklist 로그 생성
@@ -1483,7 +1569,7 @@ def run_single_mode(criteria_mode: str = "표준",
             auto_update_medicontent_posts(out, str(out_path))
 
             if patched_once:
-                patched_path = log_dir_path / f"{_nowstamp()}_content.patched.json"
+                patched_path = log_dir_path / f"{current_timestamp}_content.patched.json"
                 # 패치 정보와 함께 저장
                 patched_data = {
                     "title": title,
@@ -1494,7 +1580,7 @@ def run_single_mode(criteria_mode: str = "표준",
                         "patch_applied": applied_patch_obj if applied_patch_obj else {"patch_units": [], "notes": "패치 정보 없음"},
                         "violations_resolved": violations_before,
                         "criteria_mode": criteria_mode,
-                        "timestamp": _nowstamp()
+                        "timestamp": current_timestamp
                     }
                 }
                 _write_json(patched_path, patched_data)
@@ -1568,7 +1654,7 @@ def run_single_mode(criteria_mode: str = "표준",
                     "content": content
                 }
         
-                out_path = log_dir_path / f"{_nowstamp()}_evaluation_declined.json"
+                out_path = log_dir_path / f"{current_timestamp}_evaluation_declined.json"
                 _write_json(out_path, out)
                 print(f"⚠️ 재생성 거부. 원본 평가 결과 저장: {out_path.name}")
                 
@@ -1643,7 +1729,7 @@ def run_single_mode(criteria_mode: str = "표준",
         }
         
         # 재생성 전 평가 결과 저장
-        before_out_path = log_dir_path / f"{_nowstamp()}_evaluation_before.json"
+        before_out_path = log_dir_path / f"{current_timestamp}_evaluation_before.json"
         _write_json(before_out_path, before_out)
         print(f"💾 재생성 전 평가 결과 저장: {before_out_path.name}")
         

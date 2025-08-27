@@ -131,27 +131,140 @@ const ScorePanel = ({ post, review, onTooltip }: { post: any; review: any; onToo
 };
 
 const ReviewToolsPanel = ({ post }: { post: any }) => {
+    const [regenerating, setRegenerating] = useState(false);
+    const [regenerated, setRegenerated] = useState(false);
+
+    const handleRegenerate = async () => {
+        setRegenerating(true);
+        setRegenerated(false);
+        
+        try {
+            console.log('🔄 다시 생성 시작... postId:', post.postId);
+            
+            // 현재 postId에 해당하는 로그로 half-agents 실행
+            const response = await fetch('/api/medicontent/data-requests', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    postId: post.postId, // ✅ 실제 Post Id 사용
+                    mode: 'half-agents',        // half-agents 모드
+                    targetPostId: post.postId,  // 실제 Post Id로 로그 검색
+                    conceptMessage: '',
+                    patientCondition: '',
+                    treatmentProcessMessage: '',
+                    treatmentResultMessage: '',
+                    additionalMessage: '',
+                    beforeImages: [],
+                    processImages: [],
+                    afterImages: [],
+                    beforeImagesText: '',
+                    processImagesText: '',
+                    afterImagesText: ''
+                })
+            });
+            
+            if (response.ok) {
+                const result = await response.json();
+                console.log('✅ 다시 생성 성공:', result);
+                setRegenerated(true);
+                
+                // 3초 후 상태 초기화
+                setTimeout(() => setRegenerated(false), 3000);
+            } else {
+                const errorText = await response.text();
+                console.error('❌ 다시 생성 실패:', response.status, errorText);
+                throw new Error(`다시 생성 실패: ${response.status}`);
+            }
+        } catch (error) {
+            console.error('다시 생성 오류:', error);
+            alert('다시 생성 중 오류가 발생했습니다. 콘솔을 확인해주세요.');
+        } finally {
+            setRegenerating(false);
+        }
+    };
+
     return (
         <div className="space-y-4">
             <div className="flex gap-2">
-                <button className="flex-1 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors flex items-center justify-center gap-2">
+                <button 
+                    disabled={regenerating}
+                    className={`flex-1 px-4 py-2 rounded-lg transition-colors flex items-center justify-center gap-2 ${
+                        regenerating 
+                            ? 'bg-gray-400 text-white cursor-not-allowed' 
+                            : 'bg-blue-600 text-white hover:bg-blue-700'
+                    }`}
+                >
                     <Edit size={16} />
                     수정 요청
                 </button>
-                <button className="flex-1 bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 transition-colors flex items-center justify-center gap-2">
+                <button 
+                    disabled={regenerating}
+                    className={`flex-1 px-4 py-2 rounded-lg transition-colors flex items-center justify-center gap-2 ${
+                        regenerating 
+                            ? 'bg-gray-400 text-white cursor-not-allowed' 
+                            : 'bg-green-600 text-white hover:bg-green-700'
+                    }`}
+                >
                     <CheckCircle size={16} />
                     승인
                 </button>
             </div>
             <div className="flex gap-2">
-                <button className="flex-1 bg-gray-600 text-white px-4 py-2 rounded-lg hover:bg-gray-700 transition-colors flex items-center justify-center gap-2">
+                <button 
+                    disabled={regenerating}
+                    className={`flex-1 px-4 py-2 rounded-lg transition-colors flex items-center justify-center gap-2 ${
+                        regenerating 
+                            ? 'bg-gray-400 text-white cursor-not-allowed' 
+                            : 'bg-gray-600 text-white hover:bg-gray-700'
+                    }`}
+                >
                     <MessageCircle size={16} />
                     피드백
                 </button>
-                <button className="flex-1 bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700 transition-colors flex items-center justify-center gap-2">
+                <button 
+                    disabled={regenerating}
+                    className={`flex-1 px-4 py-2 rounded-lg transition-colors flex items-center justify-center gap-2 ${
+                        regenerating 
+                            ? 'bg-gray-400 text-white cursor-not-allowed' 
+                            : 'bg-red-600 text-white hover:bg-red-700'
+                    }`}
+                >
                     <XCircle size={16} />
                     거부
                 </button>
+            </div>
+            
+            {/* ✨ 다시 생성 버튼 추가 */}
+            <div className="pt-2 border-t">
+                <button 
+                    onClick={handleRegenerate}
+                    disabled={regenerating}
+                    className={`w-full flex items-center justify-center gap-2 px-4 py-2 rounded-lg transition-colors ${
+                        regenerating
+                            ? 'bg-gray-400 text-white cursor-not-allowed' 
+                            : 'bg-purple-600 text-white hover:bg-purple-700'
+                    }`}
+                >
+                    {regenerating ? (
+                        <>
+                            <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                            이전 자료로 다시 생성 중...
+                        </>
+                    ) : regenerated ? (
+                        <>
+                            <CheckCircle size={16} />
+                            재생성 완료!
+                        </>
+                    ) : (
+                        <>
+                            <Edit size={16} />
+                            이전 자료로 다시 생성
+                        </>
+                    )}
+                </button>
+                <p className="text-xs text-gray-500 mt-2 text-center">
+                    이전에 입력한 자료를 기반으로 콘텐츠를 다시 생성합니다
+                </p>
             </div>
         </div>
     );
@@ -161,6 +274,8 @@ const ConversionPostToolsPanel = ({ post, onSaveForm }: { post: any; onSaveForm:
     const [saving, setSaving] = useState(false);
     const [tempSaved, setTempSaved] = useState(false);
     const [completed, setCompleted] = useState(false);
+    const [regenerating, setRegenerating] = useState(false);
+    const [regenerated, setRegenerated] = useState(false);
 
     const handleTemporarySave = async () => {
         setSaving(true);
@@ -192,14 +307,63 @@ const ConversionPostToolsPanel = ({ post, onSaveForm }: { post: any; onSaveForm:
         }
     };
 
+    const handleRegenerate = async () => {
+        setRegenerating(true);
+        setRegenerated(false);
+        
+        try {
+            console.log('🔄 다시 생성 시작... postId:', post.postId);
+            
+            // 현재 postId에 해당하는 로그로 half-agents 실행
+            const response = await fetch('/api/medicontent/data-requests', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    postId: post.postId, // ✅ 실제 Post Id 사용
+                    mode: 'half-agents',        // half-agents 모드
+                    targetPostId: post.postId,  // 실제 Post Id로 로그 검색
+                    conceptMessage: '',
+                    patientCondition: '',
+                    treatmentProcessMessage: '',
+                    treatmentResultMessage: '',
+                    additionalMessage: '',
+                    beforeImages: [],
+                    processImages: [],
+                    afterImages: [],
+                    beforeImagesText: '',
+                    processImagesText: '',
+                    afterImagesText: ''
+                })
+            });
+            
+            if (response.ok) {
+                const result = await response.json();
+                console.log('✅ 다시 생성 성공:', result);
+                setRegenerated(true);
+                
+                // 3초 후 상태 초기화
+                setTimeout(() => setRegenerated(false), 3000);
+            } else {
+                const errorText = await response.text();
+                console.error('❌ 다시 생성 실패:', response.status, errorText);
+                throw new Error(`다시 생성 실패: ${response.status}`);
+            }
+        } catch (error) {
+            console.error('다시 생성 오류:', error);
+            alert('다시 생성 중 오류가 발생했습니다. 콘솔을 확인해주세요.');
+        } finally {
+            setRegenerating(false);
+        }
+    };
+
     return (
         <div className="space-y-4">
             <div className="grid grid-cols-2 gap-3">
                 <button 
                     onClick={handleTemporarySave}
-                    disabled={saving}
+                    disabled={saving || regenerating}
                     className={`flex items-center justify-center gap-2 px-4 py-2 rounded-lg transition-colors ${
-                        saving
+                        saving || regenerating
                             ? 'bg-gray-400 text-white cursor-not-allowed' 
                             : 'bg-blue-600 text-white hover:bg-blue-700'
                     }`}
@@ -223,9 +387,9 @@ const ConversionPostToolsPanel = ({ post, onSaveForm }: { post: any; onSaveForm:
                 </button>
                 <button 
                     onClick={handleComplete}
-                    disabled={saving || completed}
+                    disabled={saving || completed || regenerating}
                     className={`flex items-center justify-center gap-2 px-4 py-2 rounded-lg transition-colors ${
-                        saving || completed
+                        saving || completed || regenerating
                             ? 'bg-gray-400 text-white cursor-not-allowed' 
                             : 'bg-green-600 text-white hover:bg-green-700'
                     }`}
@@ -247,6 +411,39 @@ const ConversionPostToolsPanel = ({ post, onSaveForm }: { post: any; onSaveForm:
                         </>
                     )}
                 </button>
+            </div>
+            
+            {/* ✨ 다시 생성 버튼 추가 */}
+            <div className="pt-2 border-t">
+                <button 
+                    onClick={handleRegenerate}
+                    disabled={saving || regenerating || completed}
+                    className={`w-full flex items-center justify-center gap-2 px-4 py-2 rounded-lg transition-colors ${
+                        saving || regenerating || completed
+                            ? 'bg-gray-400 text-white cursor-not-allowed' 
+                            : 'bg-purple-600 text-white hover:bg-purple-700'
+                    }`}
+                >
+                    {regenerating ? (
+                        <>
+                            <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                            이전 자료로 다시 생성 중...
+                        </>
+                    ) : regenerated ? (
+                        <>
+                            <CheckCircle size={16} />
+                            재생성 완료!
+                        </>
+                    ) : (
+                        <>
+                            <Edit size={16} />
+                            이전 자료로 다시 생성
+                        </>
+                    )}
+                </button>
+                <p className="text-xs text-gray-500 mt-2 text-center">
+                    이전에 입력한 자료를 기반으로 콘텐츠를 다시 생성합니다
+                </p>
             </div>
         </div>
     );
@@ -354,7 +551,8 @@ const DataRequestPanel = ({ post, onSaveForm }: { post: any; onSaveForm: (handle
                         [type]: [...prev[type], ...result.attachments]
                     }));
                 } else {
-                    console.error('이미지 업로드 실패:', response.statusText);
+                    const errorData = await response.text();
+                    console.error('이미지 업로드 실패:', response.statusText, errorData);
                 }
             } catch (error) {
                 console.error('이미지 업로드 오류:', error);

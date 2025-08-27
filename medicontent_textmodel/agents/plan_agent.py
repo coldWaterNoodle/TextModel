@@ -455,7 +455,7 @@ def _repair_plan(obj: dict, input_row: dict, mode: str) -> dict:
     # title_plan
     tp = obj.get("title_plan") or {}
     tp.setdefault("guidance", "지역+카테고리+핵심 키워드/24~36자/과장금지")
-    tp.setdefault("must_include_one_of", ["{city}", "{district}", "{region_phrase}"])
+    # tp.setdefault("must_include_one_of", ["{city}", "{district}", "{region_phrase}"])
     tp.setdefault("must_include", [])
     tp.setdefault("must_not_include", ["{hospital_name}", "가격", "이벤트", "전화번호"])
     tp.setdefault("tone", "전문적·친절")
