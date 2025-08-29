@@ -262,7 +262,7 @@ def main():
             max_loops=2,
             auto_yes=True,  # 자동 실행
             log_dir=f"test_logs/{args.mode}",
-            evaluation_mode="medical"
+            evaluation_mode="both"
         )
         
         print("✅ EvaluationAgent 완료")

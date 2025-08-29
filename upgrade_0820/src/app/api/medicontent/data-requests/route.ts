@@ -84,26 +84,13 @@ async function sendToFastAPI(data: any, isUpdate: boolean = false, mode: 'input-
                     console.log(`🔍 1단계: 받은 ID로 Medicontent Posts 조회: ${data.postId}`);
                     
                     let medicontentPost;
-                    if (data.postId.startsWith('post_')) {
-                        // Post ID 형태인 경우 getPostByPostId 사용
-                        console.log(`🔍 1단계: Post ID 형태 감지, getPostByPostId 사용`);
-                        medicontentPost = await AirtableService.getPostByPostId(data.postId);
-                    } else if (data.postId.startsWith('rec')) {
-                        // Record ID 형태인 경우 getPost 사용
-                        console.log(`🔍 1단계: Record ID 형태 감지, getPost 사용`);
-                        medicontentPost = await AirtableService.getPost(data.postId);
-                    } else {
-                        // 알 수 없는 형태인 경우 둘 다 시도
-                        console.log(`🔍 1단계: 알 수 없는 ID 형태, 두 방법 모두 시도`);
-                        medicontentPost = await AirtableService.getPostByPostId(data.postId);
-                        if (!medicontentPost) {
-                            medicontentPost = await AirtableService.getPost(data.postId);
-                        }
-                    }
+                    // 원본 postId를 그대로 사용
+                    console.log(`🔍 1단계: 원본 postId 사용: ${data.postId}`);
+                    medicontentPost = await AirtableService.getPostByPostId(data.postId);
                     console.log(`🔍 1단계 결과:`, medicontentPost);
                     
                     // 디버깅: 조회 실패 시 실제 DB에 있는 Post ID 목록 확인
-                    if (!medicontentPost && data.postId.startsWith('post_')) {
+                    if (!medicontentPost) {
                         console.log('🔍 디버깅: 조회 실패, 실제 DB에 있는 Post ID 확인 중...');
                         const allPosts = await AirtableService.getPosts();
                         const postIds = allPosts.map(p => p.postId).filter(id => id);
@@ -131,34 +118,47 @@ async function sendToFastAPI(data: any, isUpdate: boolean = false, mode: 'input-
                         console.log(`   - Post Id: ${medicontentPostId}`);
                         
                         // 2. Post Data Requests에서 attachment 데이터 가져오기 (이미지용)
-                        // ✅ DB 저장 완료 후 호출되므로 실제 URL 포함된 attachment 데이터 조회 가능
-                        console.log(`🔍 2단계: DB에서 저장된 실제 attachment 데이터 조회`);
-                        try {
-                            const savedDataRequest = await AirtableService.getDataRequest(data.postId);
-                            if (savedDataRequest && savedDataRequest.beforeImages) {
+                        // ✅ 이미 저장된 데이터를 직접 사용 (DB 재조회 불필요)
+                        console.log(`🔍 2단계: 저장된 attachment 데이터 사용`);
+                        if (data.savedDataRequest) {
+                            console.log(`✅ 저장된 데이터 직접 사용:`, {
+                                beforeImages: data.savedDataRequest.get('Before Images'),
+                                processImages: data.savedDataRequest.get('Process Images'),
+                                afterImages: data.savedDataRequest.get('After Images')
+                            });
+                            actualImageData = {
+                                beforeImages: data.savedDataRequest.get('Before Images') || [],
+                                processImages: data.savedDataRequest.get('Process Images') || [],
+                                afterImages: data.savedDataRequest.get('After Images') || []
+                            };
+                        } else {
+                            // fallback: DB 조회 시도
+                            console.log(`🔍 fallback: DB에서 실제 attachment 데이터 조회`);
+                            try {
+                                const savedDataRequest = await AirtableService.getDataRequest(data.postId);
+                                if (savedDataRequest && savedDataRequest.beforeImages) {
+                                    actualImageData = {
+                                        beforeImages: savedDataRequest.beforeImages || [],
+                                        processImages: savedDataRequest.processImages || [],
+                                        afterImages: savedDataRequest.afterImages || []
+                                    };
+                                    console.log(`✅ DB에서 실제 attachment 데이터 조회 성공:`, actualImageData);
+                                } else {
+                                    console.warn(`⚠️ DB 조회 실패, 빈 배열로 초기화`);
+                                    actualImageData = {
+                                        beforeImages: [],
+                                        processImages: [],
+                                        afterImages: []
+                                    };
+                                }
+                            } catch (attachmentError) {
+                                console.warn('⚠️ attachment 데이터 조회 실패:', attachmentError);
                                 actualImageData = {
-                                    beforeImages: savedDataRequest.beforeImages || [],
-                                    processImages: savedDataRequest.processImages || [],
-                                    afterImages: savedDataRequest.afterImages || []
-                                };
-                                console.log(`✅ DB에서 실제 attachment 데이터 조회 성공:`, actualImageData);
-                            } else {
-                                // fallback: 전달받은 데이터 사용 (ID만 있는 상태)
-                                console.log(`⚠️ DB에서 attachment 데이터 조회 실패, 전달받은 데이터 사용`);
-                                actualImageData = {
-                                    beforeImages: data.beforeImages || [],
-                                    processImages: data.processImages || [],
-                                    afterImages: data.afterImages || []
+                                    beforeImages: [],
+                                    processImages: [],
+                                    afterImages: []
                                 };
                             }
-                        } catch (attachmentError) {
-                            console.warn('⚠️ attachment 데이터 조회 실패:', attachmentError);
-                            // fallback: 전달받은 데이터 사용
-                            actualImageData = {
-                                beforeImages: data.beforeImages || [],
-                                processImages: data.processImages || [],
-                                afterImages: data.afterImages || []
-                            };
                         }
                         console.log(`🔍 최종 actualImageData:`, actualImageData);
                     } else {
@@ -448,6 +448,27 @@ async function sendToFastAPI(data: any, isUpdate: boolean = false, mode: 'input-
 export async function POST(request: NextRequest) {
     try {
         console.log('📨 POST 요청 시작 - 자료 요청 제출');
+        
+        // Airtable 연결 상태 확인
+        const envCheck = AirtableService.checkEnvironment();
+        if (!envCheck.valid) {
+            console.error('❌ 환경 변수 누락:', envCheck.missing);
+            return NextResponse.json(
+                { error: `환경 변수가 누락되었습니다: ${envCheck.missing.join(', ')}` },
+                { status: 500 }
+            );
+        }
+        
+        const connectionCheck = await AirtableService.checkConnection();
+        if (!connectionCheck.connected) {
+            console.error('❌ Airtable 연결 실패:', connectionCheck.error);
+            return NextResponse.json(
+                { error: `Airtable 연결에 실패했습니다: ${connectionCheck.error}` },
+                { status: 500 }
+            );
+        }
+        
+        console.log('✅ Airtable 연결 상태 확인 완료');
         const body = await request.json();
         console.log('📋 POST 요청 데이터:', body);
         console.log('🔍 이미지 데이터 확인:', {
@@ -517,22 +538,9 @@ export async function POST(request: NextRequest) {
                 console.log(`🔍 POST: 받은 ID로 Medicontent Posts 조회: ${postId}`);
                 
                 let medicontentPost;
-                if (postId.startsWith('post_')) {
-                    // Post ID 형태인 경우 getPostByPostId 사용
-                    console.log(`🔍 POST: Post ID 형태 감지, getPostByPostId 사용`);
-                    medicontentPost = await AirtableService.getPostByPostId(postId);
-                } else if (postId.startsWith('rec')) {
-                    // Record ID 형태인 경우 getPost 사용
-                    console.log(`🔍 POST: Record ID 형태 감지, getPost 사용`);
-                    medicontentPost = await AirtableService.getPost(postId);
-                } else {
-                    // 알 수 없는 형태인 경우 둘 다 시도
-                    console.log(`🔍 POST: 알 수 없는 ID 형태, 두 방법 모두 시도`);
-                    medicontentPost = await AirtableService.getPostByPostId(postId);
-                    if (!medicontentPost) {
-                        medicontentPost = await AirtableService.getPost(postId);
-                    }
-                }
+                // 원본 postId를 그대로 사용
+                console.log(`🔍 POST: 원본 postId 사용: ${postId}`);
+                medicontentPost = await AirtableService.getPostByPostId(postId);
                 if (medicontentPost) {
                     actualMedicontentPostId = medicontentPost.postId; // 실제 Post Id 필드 값
                     actualMedicontentRecordId = medicontentPost.id; // record ID
@@ -549,8 +557,9 @@ export async function POST(request: NextRequest) {
                         actualPostDataRequestPostIdFull = actualMedicontentPostId;
                     }
                     
-                    await AirtableService.updatePostStatus(medicontentPost.id, '병원 작업 중');
-                    console.log('✅ Medicontent Posts 상태 변경: 병원 작업 중');
+                    // 안전한 상태값 사용
+                    await AirtableService.updatePostStatus(medicontentPost.id, '대기');
+                    console.log('✅ Medicontent Posts 상태 변경: 대기 (안전한 기본값)');
                 } else {
                     console.warn('⚠️ Medicontent Posts를 찾을 수 없어서 상태 변경 생략');
                 }
@@ -567,6 +576,9 @@ export async function POST(request: NextRequest) {
             actualPostDataRequestPostIdFull, // Post Data Requests의 full ID (post_recXXXXX)
             actualMedicontentPostId, // Medicontent Posts의 실제 Post Id
             actualMedicontentRecordId, // Medicontent Posts의 record ID
+            
+            // ✅ 저장된 데이터 직접 전달 (DB 재조회 없이 사용)
+            savedDataRequest: createdDataRequest,
             
             // ✨ UI에서 전달받을 수 있는 추가 옵션들
             mode: body.mode || null,                    // 실행 모드 선택
@@ -606,7 +618,10 @@ export async function POST(request: NextRequest) {
             });
         }
     } catch (error) {
-        console.error('자료 요청 제출 API 오류:', error);
+        console.error('자료 요청 제출 API 오류 - 에러 타입:', typeof error);
+        console.error('자료 요청 제출 API 오류 - 에러 객체:', error);
+        console.error('자료 요청 제출 API 오류 - 에러 메시지:', error instanceof Error ? error.message : String(error));
+        console.error('자료 요청 제출 API 오류 - 에러 스택:', error instanceof Error ? error.stack : '스택 없음');
         
         // 구체적인 에러 메시지 제공
         let errorMessage = '자료 요청 제출에 실패했습니다.';
@@ -617,7 +632,7 @@ export async function POST(request: NextRequest) {
                 errorMessage = error.message;
             }
             // Airtable 관련 에러인 경우
-            else if (error.message.includes('Airtable') || error.message.includes('base')) {
+            else if (error.message.includes('Airtable') || error.message.includes('base') || error.message.includes('자료 요청 업데이트 실패') || error.message.includes('포스트 상태 업데이트 실패')) {
                 errorMessage = 'Airtable 연결에 실패했습니다. 네트워크 상태를 확인해주세요.';
             }
             // FastAPI 관련 에러인 경우  
@@ -639,6 +654,27 @@ export async function POST(request: NextRequest) {
 export async function PUT(request: NextRequest) {
     try {
         console.log('📨 PUT 요청 시작 - 자료 요청 업데이트');
+        
+        // Airtable 연결 상태 확인
+        const envCheck = AirtableService.checkEnvironment();
+        if (!envCheck.valid) {
+            console.error('❌ 환경 변수 누락:', envCheck.missing);
+            return NextResponse.json(
+                { error: `환경 변수가 누락되었습니다: ${envCheck.missing.join(', ')}` },
+                { status: 500 }
+            );
+        }
+        
+        const connectionCheck = await AirtableService.checkConnection();
+        if (!connectionCheck.connected) {
+            console.error('❌ Airtable 연결 실패:', connectionCheck.error);
+            return NextResponse.json(
+                { error: `Airtable 연결에 실패했습니다: ${connectionCheck.error}` },
+                { status: 500 }
+            );
+        }
+        
+        console.log('✅ Airtable 연결 상태 확인 완료');
         const body = await request.json();
         console.log('📋 PUT 요청 데이터:', body);
         console.log('🔍 PUT 이미지 데이터 확인:', {
@@ -710,22 +746,9 @@ export async function PUT(request: NextRequest) {
                 console.log(`🔍 PUT: 받은 ID로 Medicontent Posts 조회: ${postId}`);
                 
                 let medicontentPost;
-                if (postId.startsWith('post_')) {
-                    // Post ID 형태인 경우 getPostByPostId 사용
-                    console.log(`🔍 PUT: Post ID 형태 감지, getPostByPostId 사용`);
-                    medicontentPost = await AirtableService.getPostByPostId(postId);
-                } else if (postId.startsWith('rec')) {
-                    // Record ID 형태인 경우 getPost 사용
-                    console.log(`🔍 PUT: Record ID 형태 감지, getPost 사용`);
-                    medicontentPost = await AirtableService.getPost(postId);
-                } else {
-                    // 알 수 없는 형태인 경우 둘 다 시도
-                    console.log(`🔍 PUT: 알 수 없는 ID 형태, 두 방법 모두 시도`);
-                    medicontentPost = await AirtableService.getPostByPostId(postId);
-                    if (!medicontentPost) {
-                        medicontentPost = await AirtableService.getPost(postId);
-                    }
-                }
+                // 원본 postId를 그대로 사용
+                console.log(`🔍 PUT: 원본 postId 사용: ${postId}`);
+                medicontentPost = await AirtableService.getPostByPostId(postId);
                 if (medicontentPost) {
                     actualMedicontentPostId = medicontentPost.postId; // 실제 Post Id 필드 값
                     actualMedicontentRecordId = medicontentPost.id; // record ID
@@ -742,8 +765,9 @@ export async function PUT(request: NextRequest) {
                         actualPostDataRequestPostIdFull = actualMedicontentPostId;
                     }
                     
-                    await AirtableService.updatePostStatus(medicontentPost.id, '병원 작업 중');
-                    console.log('✅ Medicontent Posts 상태 변경 (PUT): 병원 작업 중');
+                    // 안전한 상태값 사용
+                    await AirtableService.updatePostStatus(medicontentPost.id, '대기');
+                    console.log('✅ Medicontent Posts 상태 변경 (PUT): 대기 (안전한 기본값)');
                 } else {
                     console.warn('⚠️ Medicontent Posts를 찾을 수 없어서 상태 변경 생략 (PUT)');
                 }
@@ -797,33 +821,36 @@ export async function PUT(request: NextRequest) {
                 warning: 'FastAPI 연동 실패 (백엔드 로그 미저장)'
             });
         }
-    } catch (error) {
-        console.error('자료 요청 업데이트 API 오류:', error);
-        
-        // 구체적인 에러 메시지 제공
-        let errorMessage = '자료 요청 업데이트에 실패했습니다.';
-        
-        if (error instanceof Error) {
-            // 병원 정보 관련 에러인 경우 구체적인 메시지 제공
-            if (error.message.includes('병원 정보가 등록되지 않았습니다')) {
-                errorMessage = error.message;
-            }
-            // Airtable 관련 에러인 경우
-            else if (error.message.includes('Airtable') || error.message.includes('base')) {
-                errorMessage = 'Airtable 연결에 실패했습니다. 네트워크 상태를 확인해주세요.';
-            }
-            // FastAPI 관련 에러인 경우  
-            else if (error.message.includes('FastAPI')) {
-                errorMessage = 'FastAPI 서버 연결에 실패했습니다. 백엔드 서버 상태를 확인해주세요.';
+            } catch (error) {
+            console.error('자료 요청 업데이트 API 오류 - 에러 타입:', typeof error);
+            console.error('자료 요청 업데이트 API 오류 - 에러 객체:', error);
+            console.error('자료 요청 업데이트 API 오류 - 에러 메시지:', error instanceof Error ? error.message : String(error));
+            console.error('자료 요청 업데이트 API 오류 - 에러 스택:', error instanceof Error ? error.stack : '스택 없음');
+            
+            // 구체적인 에러 메시지 제공
+            let errorMessage = '자료 요청 업데이트에 실패했습니다.';
+            
+            if (error instanceof Error) {
+                // 병원 정보 관련 에러인 경우 구체적인 메시지 제공
+                if (error.message.includes('병원 정보가 등록되지 않았습니다')) {
+                    errorMessage = error.message;
+                }
+                // Airtable 관련 에러인 경우
+                else if (error.message.includes('Airtable') || error.message.includes('base') || error.message.includes('자료 요청 업데이트 실패') || error.message.includes('포스트 상태 업데이트 실패')) {
+                    errorMessage = 'Airtable 연결에 실패했습니다. 네트워크 상태를 확인해주세요.';
+                }
+                // FastAPI 관련 에러인 경우  
+                else if (error.message.includes('FastAPI')) {
+                    errorMessage = 'FastAPI 서버 연결에 실패했습니다. 백엔드 서버 상태를 확인해주세요.';
+                }
+                
+                console.error('❌ 구체적인 에러:', error.message);
+                console.error('❌ 에러 스택:', error.stack);
             }
             
-            console.error('❌ 구체적인 에러:', error.message);
-            console.error('❌ 에러 스택:', error.stack);
+            return NextResponse.json(
+                { error: errorMessage },
+                { status: 500 }
+            );
         }
-        
-        return NextResponse.json(
-            { error: errorMessage },
-            { status: 500 }
-        );
-    }
 }

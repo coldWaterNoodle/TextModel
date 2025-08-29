@@ -8,6 +8,7 @@ from pathlib import Path
 import json
 from datetime import datetime
 import requests
+import re
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -16,6 +17,64 @@ current_dir = Path(__file__).parent.parent
 sys.path.append(str(current_dir / "agents"))
 
 router = APIRouter()
+
+# ===== Google Drive URL 처리 함수 =====
+def convert_google_drive_urls_to_images(long_text: str, descriptions_text: str = "") -> List[Dict[str, Any]]:
+    """
+    Long Text 필드에서 Google Drive URL을 추출하여 이미지 형식으로 변환
+    
+    Args:
+        long_text: Google Drive URL이 포함된 Long Text 필드 내용
+        descriptions_text: 쉼표로 구분된 설명 텍스트
+        
+    Returns:
+        input_agent 형식의 이미지 리스트
+    """
+    if not long_text:
+        return []
+    
+    # Google Drive URL 패턴 (다양한 형식 지원)
+    google_drive_patterns = [
+        r'https://drive\.google\.com/file/d/([a-zA-Z0-9_-]+)',
+        r'https://drive\.google\.com/open\?id=([a-zA-Z0-9_-]+)',
+        r'https://drive\.google\.com/uc\?id=([a-zA-Z0-9_-]+)',
+        r'https://docs\.google\.com/uc\?id=([a-zA-Z0-9_-]+)'
+    ]
+    
+    # 설명 텍스트를 배열로 분리
+    descriptions = []
+    if descriptions_text:
+        descriptions = [desc.strip() for desc in descriptions_text.split(',')]
+    
+    result = []
+    found_urls = set()  # 중복 URL 방지
+    
+    for pattern in google_drive_patterns:
+        matches = re.finditer(pattern, long_text, re.IGNORECASE)
+        for match in matches:
+            file_id = match.group(1)
+            url = match.group(0)
+            
+            # 중복 URL 체크
+            if url in found_urls:
+                continue
+            found_urls.add(url)
+            
+            # 설명 텍스트 할당
+            description = descriptions[len(result)] if len(result) < len(descriptions) else ""
+            
+            image_info = {
+                "filename": f"google_drive_{file_id}.jpg",
+                "description": description,
+                "url": url,
+                "path": url,
+                "source": "google_drive"
+            }
+            
+            result.append(image_info)
+            print(f"✅ Google Drive URL 발견: {url}")
+    
+    return result
 
 # ===== 특정 로그 검색 함수 =====
 def find_specific_log(mode: str, target_case_id: str = None, target_post_id: str = None, 
@@ -304,13 +363,6 @@ async def root():
 @router.get("/health")
 async def health_check():
     return {"status": "healthy", "service": "medicontent-textmodel"}
-
-
-
-
-
-
-
 
 
 
@@ -827,6 +879,53 @@ async def input_agent_only(request: dict):
             print("✅ InputAgent 실행 완료 (로컬 로그 저장됨)")
             print(f"📤 결과: case_id={result.get('case_id', 'N/A')}")
             
+            # 🔧 Google Drive URL로 로그 업데이트 (input_agent 완료 후)
+            if result.get("case_id"):
+                print("🔄 Google Drive URL로 로그 업데이트 중...")
+                google_drive_urls = {}
+                google_drive_fields = {
+                    "question3_visit_images": "Before Images URL",
+                    "question5_therapy_images": "Process Images URL", 
+                    "question7_result_images": "After Images URL"
+                }
+                
+                # UI에서 전달받은 savedDataRequest에서 Google Drive URL 추출
+                saved_data_request = request.get("savedDataRequest")
+                if saved_data_request:
+                    print("✅ savedDataRequest에서 Google Drive URL 추출")
+                    for image_field, google_drive_field in google_drive_fields.items():
+                        # Airtable Record에서 Google Drive URL 필드 조회
+                        gdrive_url_text = ""
+                        try:
+                            gdrive_url_text = saved_data_request.get(google_drive_field) or ""
+                            if not gdrive_url_text:
+                                # 필드명 변형 시도 (소문자, 공백 제거 등)
+                                alt_field = google_drive_field.lower().replace(" ", "_")
+                                gdrive_url_text = saved_data_request.get(alt_field) or ""
+                        except Exception as e:
+                            print(f"⚠️ {google_drive_field} 필드 조회 실패: {e}")
+                        
+                        if gdrive_url_text:
+                            urls = convert_google_drive_urls_to_images(gdrive_url_text, "")
+                            google_drive_urls[image_field] = [img.get("url", "") for img in urls if img.get("url")]
+                            print(f"🔍 {image_field}: {len(google_drive_urls[image_field])}개 URL 발견")
+                else:
+                    print("⚠️ savedDataRequest가 없어 Google Drive URL 추출 생략")
+                
+                # Google Drive URL이 있는 경우에만 업데이트
+                if any(urls for urls in google_drive_urls.values()):
+                    success = input_agent.update_images_with_google_drive_urls(
+                        result["case_id"], 
+                        google_drive_urls, 
+                        mode="use"
+                    )
+                    if success:
+                        print("✅ Google Drive URL 로그 업데이트 완료")
+                    else:
+                        print("⚠️ Google Drive URL 로그 업데이트 실패")
+                else:
+                    print("ℹ️ Google Drive URL이 없어 업데이트 생략")
+            
             # isFinalSave가 true일 때만 Medicontent Posts 상태를 '리걸케어 작업 중'으로 변경
             is_final_save = request.get("isFinalSave", False)
             if "postId" in request and is_final_save:
@@ -943,21 +1042,21 @@ async def get_input_data_from_db(target_id: str) -> Optional[dict]:
             "question1_concept": record_data.get("Concept Message") or record_data.get("conceptMessage", ""),
             "question2_condition": record_data.get("Patient Condition") or record_data.get("patientCondition", ""),
             "question3_visit_images": convert_attachments_to_images(
-                record_data.get("Before Images") or record_data.get("beforeImages", []),
+                record_data.get("File attachments") or record_data.get("fileAttachments", []),
                 record_data.get("Before Images Texts") or record_data.get("beforeImagesText", ""),
-                record_id
+                record_data.get("id", "")
             ),
             "question4_treatment": record_data.get("Treatment Process Message") or record_data.get("treatmentProcessMessage", ""),
             "question5_therapy_images": convert_attachments_to_images(
-                record_data.get("Process Images") or record_data.get("processImages", []),
+                record_data.get("File attachments") or record_data.get("fileAttachments", []),
                 record_data.get("Process Images Texts") or record_data.get("processImagesText", ""),
-                record_id
+                record_data.get("id", "")
             ),
             "question6_result": record_data.get("Treatment Result Message") or record_data.get("treatmentResultMessage", ""),
             "question7_result_images": convert_attachments_to_images(
-                record_data.get("After Images") or record_data.get("afterImages", []),
+                record_data.get("File attachments") or record_data.get("fileAttachments", []),
                 record_data.get("After Images Texts") or record_data.get("afterImagesText", ""),
-                record_id
+                record_data.get("id", "")
             ),
             "question8_extra": record_data.get("Additional Message") or record_data.get("additionalMessage", ""),
             "include_tooth_numbers": False,
@@ -976,6 +1075,42 @@ async def get_input_data_from_db(target_id: str) -> Optional[dict]:
         print(f"  - postId: {input_data['postId']}")
         print(f"  - 텍스트 필드: {len([k for k, v in input_data.items() if k.startswith('question') and isinstance(v, str) and v])}개")
         print(f"  - 이미지 필드: {len([k for k, v in input_data.items() if k.endswith('_images') and v])}개")
+        
+        # 🔧 원본 record_data를 input_data에 저장 (Google Drive URL 업데이트용)
+        input_data["_original_record_data"] = record_data
+        
+        # 🔧 Google Drive URL로 input 로그 업데이트 (input_agent 완료 후)
+        print("🔄 Google Drive URL로 input 로그 업데이트 중...")
+        google_drive_urls = {}
+        google_drive_fields = {
+            "question3_visit_images": "Before Images URL",
+            "question5_therapy_images": "Process Images URL", 
+            "question7_result_images": "After Images URL"
+        }
+        
+        # 원본 record_data에서 Google Drive URL 추출
+        for image_field, google_drive_field in google_drive_fields.items():
+            urls = convert_google_drive_urls_to_images(
+                record_data.get(google_drive_field) or record_data.get(google_drive_field.lower(), ""),
+                ""
+            )
+            google_drive_urls[image_field] = [img.get("url", "") for img in urls if img.get("url")]
+        
+        # Google Drive URL이 있는 경우에만 업데이트
+        if any(urls for urls in google_drive_urls.values()):
+            from agents.input_agent import InputAgent
+            input_agent = InputAgent(case_num="1")
+            success = input_agent.update_images_with_google_drive_urls(
+                input_data["case_id"], 
+                google_drive_urls, 
+                mode="use"
+            )
+            if success:
+                print("✅ Google Drive URL 로그 업데이트 완료")
+            else:
+                print("⚠️ Google Drive URL 로그 업데이트 실패")
+        else:
+            print("ℹ️ Google Drive URL이 없어 업데이트 생략")
         
         return input_data
         
@@ -1067,6 +1202,12 @@ def convert_attachments_to_images(attachments, descriptions_text: str = "", reco
         result.append(image_info)
     
     return result
+
+
+
+
+
+
 
 
 def get_emote_images_from_db(active_only: bool = True) -> list[dict]:

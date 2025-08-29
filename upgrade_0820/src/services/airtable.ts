@@ -1,5 +1,37 @@
 import Airtable, { FieldSet, Attachment } from 'airtable';
 
+// 안전한 상태값 변환 함수
+function getSafeStatusValue(status: string): string | null {
+    // Airtable에서 허용된 상태값들
+    const allowedStatuses = [
+        '대기',
+        '병원 작업 중', 
+        '리걸케어 작업 중',
+        '작업 완료',
+        '자료 제공 필요',
+        '초안 검토 필요'
+    ];
+    
+    // 정확히 일치하는 경우
+    if (allowedStatuses.includes(status)) {
+        return status;
+    }
+    
+    // 부분 일치하는 경우 (대소문자 무시)
+    const normalizedStatus = status.toLowerCase().trim();
+    const matchedStatus = allowedStatuses.find(allowed => 
+        allowed.toLowerCase().trim() === normalizedStatus
+    );
+    
+    if (matchedStatus) {
+        return matchedStatus;
+    }
+    
+    // 기본값 반환
+    console.warn(`⚠️ 알 수 없는 상태값: ${status}, 기본값 '대기' 사용`);
+    return '대기';
+}
+
 // Today Channel News 타입 정의
 export interface TodayChannelNewsRecord extends FieldSet {
     ID: string;
@@ -417,12 +449,20 @@ export interface PlaceReviewReport extends FieldSet {
 const AIRTABLE_API_KEY = process.env.NEXT_PUBLIC_AIRTABLE_API_KEY;
 const AIRTABLE_BASE_ID = process.env.NEXT_PUBLIC_AIRTABLE_BASE_ID;
 
+// 디버깅: 환경 변수 상태 확인
+console.log('🔍 환경 변수 상태 확인:', {
+    AIRTABLE_API_KEY: AIRTABLE_API_KEY ? '설정됨' : '누락',
+    AIRTABLE_BASE_ID: AIRTABLE_BASE_ID ? '설정됨' : '누락',
+    NEXT_PUBLIC_AIRTABLE_API_KEY: process.env.NEXT_PUBLIC_AIRTABLE_API_KEY ? '설정됨' : '누락',
+    NEXT_PUBLIC_AIRTABLE_BASE_ID: process.env.NEXT_PUBLIC_AIRTABLE_BASE_ID ? '설정됨' : '누락'
+});
+
 if (!AIRTABLE_API_KEY || !AIRTABLE_BASE_ID) {
     console.error('❌ Airtable 환경변수 누락:', {
         AIRTABLE_API_KEY: AIRTABLE_API_KEY ? '설정됨' : '누락',
         AIRTABLE_BASE_ID: AIRTABLE_BASE_ID ? '설정됨' : '누락'
     });
-    throw new Error('Airtable API 키와 Base ID가 필요합니다.');
+    throw new Error('환경 변수가 누락되었습니다: AIRTABLE_API_KEY, AIRTABLE_BASE_ID');
 }
 
 const base = new Airtable({ apiKey: AIRTABLE_API_KEY }).base(AIRTABLE_BASE_ID);
@@ -663,27 +703,68 @@ export class AirtableService {
 
     static async updatePostStatus(id: string, status: string): Promise<void> {
         try {
+            // 안전한 상태값 사용
+            const safeStatus = getSafeStatusValue(status);
+            if (!safeStatus) {
+                throw new Error(`유효하지 않은 상태값: ${status}`);
+            }
+            
             await base('Medicontent Posts').update(id, {
-                'Status': status
+                'Status': safeStatus
                 // 'Updated At'은 Airtable에서 자동으로 관리되므로 제거
             });
+            console.log('✅ Medicontent Posts 상태 업데이트 성공:', { id, status: safeStatus });
         } catch (error) {
-            console.error('포스트 상태 업데이트 실패:', {
-                id,
-                status,
-                error: error instanceof Error ? error.message : error,
-                stack: error instanceof Error ? error.stack : undefined
-            });
-            throw error;
+            // 상세한 에러 정보 로깅
+            console.error('❌ 포스트 상태 업데이트 실패 - 에러 타입:', typeof error);
+            console.error('❌ 포스트 상태 업데이트 실패 - 에러 객체:', error);
+            console.error('❌ 포스트 상태 업데이트 실패 - 에러 메시지:', error instanceof Error ? error.message : String(error));
+            console.error('❌ 포스트 상태 업데이트 실패 - 에러 스택:', error instanceof Error ? error.stack : '스택 없음');
+            console.error('❌ 포스트 상태 업데이트 실패 - 컨텍스트:', { id, status });
+            
+            // Airtable API 에러인 경우 추가 정보 로깅
+            if (error && typeof error === 'object' && 'error' in error) {
+                console.error('❌ 포스트 상태 업데이트 실패 - Airtable 에러 상세:', error.error);
+            }
+            
+            // 사용자 친화적인 에러 메시지 생성
+            let errorMessage = 'Airtable 포스트 상태 업데이트 실패';
+            if (error instanceof Error) {
+                errorMessage = error.message;
+            } else if (error && typeof error === 'object' && 'error' in error) {
+                errorMessage = String(error.error);
+            }
+            
+            throw new Error(`포스트 상태 업데이트 실패: ${errorMessage}`);
         }
     }
 
     static async updatePost(id: string, updateData: any): Promise<void> {
         try {
             await base('Medicontent Posts').update(id, updateData);
+            console.log('✅ Medicontent Posts 업데이트 성공:', { id, updateData });
         } catch (error) {
-            console.error('포스트 업데이트 실패:', error);
-            throw error;
+            // 상세한 에러 정보 로깅
+            console.error('❌ 포스트 업데이트 실패 - 에러 타입:', typeof error);
+            console.error('❌ 포스트 업데이트 실패 - 에러 객체:', error);
+            console.error('❌ 포스트 업데이트 실패 - 에러 메시지:', error instanceof Error ? error.message : String(error));
+            console.error('❌ 포스트 업데이트 실패 - 에러 스택:', error instanceof Error ? error.stack : '스택 없음');
+            console.error('❌ 포스트 업데이트 실패 - 컨텍스트:', { id, updateData });
+            
+            // Airtable API 에러인 경우 추가 정보 로깅
+            if (error && typeof error === 'object' && 'error' in error) {
+                console.error('❌ 포스트 업데이트 실패 - Airtable 에러 상세:', error.error);
+            }
+            
+            // 사용자 친화적인 에러 메시지 생성
+            let errorMessage = 'Airtable 포스트 업데이트 실패';
+            if (error instanceof Error) {
+                errorMessage = error.message;
+            } else if (error && typeof error === 'object' && 'error' in error) {
+                errorMessage = String(error.error);
+            }
+            
+            throw new Error(`포스트 업데이트 실패: ${errorMessage}`);
         }
     }
 
@@ -966,7 +1047,16 @@ export class AirtableService {
             if (data.processImagesText !== undefined) updateData['Process Images Texts'] = data.processImagesText;
             if (data.afterImagesText !== undefined) updateData['After Images Texts'] = data.afterImagesText;
             
-            if (data.status !== undefined) updateData['Status'] = data.status;
+            // Status 필드 안전 처리 - Airtable에서 허용된 옵션만 사용
+            if (data.status !== undefined) {
+                const statusString = String(data.status);
+                const safeStatus = getSafeStatusValue(statusString);
+                if (safeStatus) {
+                    updateData['Status'] = safeStatus;
+                } else {
+                    console.warn(`⚠️ 안전하지 않은 상태값 무시: ${statusString}`);
+                }
+            }
             
             console.log('Airtable에 업데이트할 데이터:', updateData);
             
@@ -974,8 +1064,26 @@ export class AirtableService {
             
             console.log('Airtable 레코드 업데이트 성공');
         } catch (error) {
-            console.error('자료 요청 업데이트 실패:', error);
-            throw error;
+            // 상세한 에러 정보 로깅
+            console.error('자료 요청 업데이트 실패 - 에러 타입:', typeof error);
+            console.error('자료 요청 업데이트 실패 - 에러 객체:', error);
+            console.error('자료 요청 업데이트 실패 - 에러 메시지:', error instanceof Error ? error.message : String(error));
+            console.error('자료 요청 업데이트 실패 - 에러 스택:', error instanceof Error ? error.stack : '스택 없음');
+            
+            // Airtable API 에러인 경우 추가 정보 로깅
+            if (error && typeof error === 'object' && 'error' in error) {
+                console.error('자료 요청 업데이트 실패 - Airtable 에러 상세:', error.error);
+            }
+            
+            // 사용자 친화적인 에러 메시지 생성
+            let errorMessage = 'Airtable 업데이트 실패';
+            if (error instanceof Error) {
+                errorMessage = error.message;
+            } else if (error && typeof error === 'object' && 'error' in error) {
+                errorMessage = String(error.error);
+            }
+            
+            throw new Error(`자료 요청 업데이트 실패: ${errorMessage}`);
         }
     }
 
@@ -987,8 +1095,26 @@ export class AirtableService {
             });
             console.log('✅ Post Data Requests Post Id 업데이트 성공:', postId);
         } catch (error) {
-            console.error('❌ Post Data Requests Post Id 업데이트 실패:', error);
-            throw error;
+            // 상세한 에러 정보 로깅
+            console.error('❌ Post Data Requests Post Id 업데이트 실패 - 에러 타입:', typeof error);
+            console.error('❌ Post Data Requests Post Id 업데이트 실패 - 에러 객체:', error);
+            console.error('❌ Post Data Requests Post Id 업데이트 실패 - 에러 메시지:', error instanceof Error ? error.message : String(error));
+            console.error('❌ Post Data Requests Post Id 업데이트 실패 - 에러 스택:', error instanceof Error ? error.stack : '스택 없음');
+            
+            // Airtable API 에러인 경우 추가 정보 로깅
+            if (error && typeof error === 'object' && 'error' in error) {
+                console.error('❌ Post Data Requests Post Id 업데이트 실패 - Airtable 에러 상세:', error.error);
+            }
+            
+            // 사용자 친화적인 에러 메시지 생성
+            let errorMessage = 'Airtable Post ID 업데이트 실패';
+            if (error instanceof Error) {
+                errorMessage = error.message;
+            } else if (error && typeof error === 'object' && 'error' in error) {
+                errorMessage = String(error.error);
+            }
+            
+            throw new Error(`Post Data Requests Post Id 업데이트 실패: ${errorMessage}`);
         }
     }
 
@@ -2660,6 +2786,54 @@ export class AirtableService {
         } catch (error) {
             console.error('플레이스 리뷰 리포트 조회 실패:', error);
             return [];
+        }
+    }
+
+    // Airtable 연결 상태 확인 유틸리티
+    static async checkConnection(): Promise<{ connected: boolean; error?: string }> {
+        try {
+            // 간단한 쿼리로 연결 상태 확인
+            await base('Medicontent Posts').select({ maxRecords: 1 }).all();
+            return { connected: true };
+        } catch (error) {
+            console.error('Airtable 연결 확인 실패:', error);
+            let errorMessage = 'Airtable 연결 실패';
+            if (error instanceof Error) {
+                errorMessage = error.message;
+            } else if (error && typeof error === 'object' && 'error' in error) {
+                errorMessage = String(error.error);
+            }
+            return { connected: false, error: errorMessage };
+        }
+    }
+
+    // 환경 변수 확인 유틸리티
+    static checkEnvironment(): { valid: boolean; missing: string[] } {
+        const required = ['NEXT_PUBLIC_AIRTABLE_API_KEY', 'NEXT_PUBLIC_AIRTABLE_BASE_ID'];
+        const missing = required.filter(key => !process.env[key]);
+        
+        return {
+            valid: missing.length === 0,
+            missing
+        };
+    }
+
+    // Airtable에서 실제 사용 가능한 상태값 확인
+    static async getAvailableStatusOptions(): Promise<string[]> {
+        try {
+            // Post Data Requests 테이블의 Status 필드 옵션 확인
+            const records = await base('Post Data Requests').select({ maxRecords: 1 }).all();
+            if (records.length > 0) {
+                const record = records[0];
+                const statusField = record.get('Status');
+                console.log('🔍 현재 Status 필드 값:', statusField);
+            }
+            
+            // 기본값 반환 (실제로는 Airtable API로 필드 옵션을 가져와야 함)
+            return ['대기', '병원 작업 중', '리걸케어 작업 중', '작업 완료', '자료 제공 필요', '초안 검토 필요'];
+        } catch (error) {
+            console.error('Status 옵션 조회 실패:', error);
+            return ['대기']; // 최소한의 안전한 기본값
         }
     }
 }

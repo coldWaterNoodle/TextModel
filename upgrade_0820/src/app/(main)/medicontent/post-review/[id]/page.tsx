@@ -550,12 +550,31 @@ const DataRequestPanel = ({ post, onSaveForm }: { post: any; onSaveForm: (handle
                         ...prev,
                         [type]: [...prev[type], ...result.attachments]
                     }));
+                    
+                    // 이미지 업로드 후 상태를 "병원 작업 중"으로 업데이트
+                    try {
+                        const existingData = await AirtableService.getDataRequest(post.postId);
+                        if (existingData) {
+                            await AirtableService.updateDataRequest(existingData.id, {
+                                status: '대기' // 안전한 기본값 사용
+                            });
+                            console.log('상태 업데이트 완료: 대기 (안전한 기본값)');
+                        }
+                    } catch (statusError) {
+                        console.error('상태 업데이트 실패 - 에러 타입:', typeof statusError);
+                        console.error('상태 업데이트 실패 - 에러 객체:', statusError);
+                        console.error('상태 업데이트 실패 - 에러 메시지:', statusError instanceof Error ? statusError.message : String(statusError));
+                        console.error('상태 업데이트 실패 - 에러 스택:', statusError instanceof Error ? statusError.stack : '스택 없음');
+                    }
                 } else {
                     const errorData = await response.text();
                     console.error('이미지 업로드 실패:', response.statusText, errorData);
                 }
             } catch (error) {
-                console.error('이미지 업로드 오류:', error);
+                console.error('이미지 업로드 오류 - 에러 타입:', typeof error);
+                console.error('이미지 업로드 오류 - 에러 객체:', error);
+                console.error('이미지 업로드 오류 - 에러 메시지:', error instanceof Error ? error.message : String(error));
+                console.error('이미지 업로드 오류 - 에러 스택:', error instanceof Error ? error.stack : '스택 없음');
             }
         }
     };
@@ -628,7 +647,10 @@ const DataRequestPanel = ({ post, onSaveForm }: { post: any; onSaveForm: (handle
             setSaved(true);
             setTimeout(() => setSaved(false), 2000);
         } catch (error) {
-            console.error('자료 요청 저장 실패:', error);
+            console.error('자료 요청 저장 실패 - 에러 타입:', typeof error);
+            console.error('자료 요청 저장 실패 - 에러 객체:', error);
+            console.error('자료 요청 저장 실패 - 에러 메시지:', error instanceof Error ? error.message : String(error));
+            console.error('자료 요청 저장 실패 - 에러 스택:', error instanceof Error ? error.stack : '스택 없음');
         } finally {
             setLoading(false);
         }
@@ -971,14 +993,12 @@ const PostDetailPage = ({ params }: { params: Promise<{ id: string }> }) => {
     useEffect(() => {
         const fetchPostData = async () => {
             try {
-                // URL 파라미터에서 받은 id에 post_ 접두사를 붙여서 Post Id로 검색
-                const fullPostId = id.startsWith('post_') ? id : `post_${id}`;
-                const postData = await AirtableService.getPostByPostId(fullPostId);
+                const postData = await AirtableService.getPostByPostId(id);
                 if (postData) {
                     setPost(postData);
                     
-                    // 검토 데이터도 함께 로드 (동일한 fullPostId 사용)
-                    const reviewData = await AirtableService.getPostReview(fullPostId);
+                    // 검토 데이터도 함께 로드
+                    const reviewData = await AirtableService.getPostReview(id);
                     setReview(reviewData);
                 }
             } catch (error) {

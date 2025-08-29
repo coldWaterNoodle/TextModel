@@ -162,8 +162,7 @@ const ActionDashboard = ({ posts }: { posts: any[] }) => {
                                 <div
                                     key={post.id}
                                     onClick={() => {
-                                        const urlId = post.postId?.replace('post_', '') || post.id;
-                                        router.push(`/medicontent/post-review/${urlId}`);
+                                        router.push(`/medicontent/post-review/${post.postId || post.id}`);
                                     }}
                                     className="flex items-center justify-between bg-gray-50 p-3 rounded-lg hover:bg-gray-100 cursor-pointer transition-colors"
                                 >
@@ -241,9 +240,7 @@ const PostCard: React.FC<PostCardProps> = ({ post }) => {
     const { style, text, icon, borderColor } = getStatusAppearance(post.status);
 
     const handleCardClick = () => {
-        // Post ID에서 post_ 접두사 제거하여 URL 생성
-        const urlId = post.postId?.replace('post_', '') || post.id;
-        router.push(`/medicontent/post-review/${urlId}`);
+        router.push(`/medicontent/post-review/${post.postId || post.id}`);
     };
 
     const typeStyle =

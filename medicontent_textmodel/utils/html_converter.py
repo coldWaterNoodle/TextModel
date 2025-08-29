@@ -210,7 +210,8 @@ class BlogHTMLConverter:
         for img in images:
             original_path = img.get('path', '')
             alt_text = img.get('alt', '')
-            
+            is_emote = (img.get('position') == 'emoticon')  # ← 추가
+
             # 🔧 Airtable URL 우선 사용 (프록시 URL 포함)
             if img.get('url') and (img['url'].startswith(('http://', 'https://')) or img['url'].startswith('/airtable/')):
                 # Airtable URL 또는 프록시 URL 직접 사용
@@ -229,8 +230,10 @@ class BlogHTMLConverter:
                 continue
         
             if react_mode:
-                # React 모드: style을 객체로
-                style_obj = '{width: "100%", maxWidth: "500px", height: "auto"}'
+                if is_emote:
+                    style_obj = '{width:"100px",height:"100px",objectFit:"contain",verticalAlign:"middle"}'
+                else:
+                    style_obj = '{width:"100%",maxWidth:"500px",height:"auto"}'
                 images_html += f'''
             <figure>
                 <img src="{img_path}" alt="{alt_text}" style={style_obj} />
@@ -238,10 +241,13 @@ class BlogHTMLConverter:
             </figure>
             '''
             else:
-                # 일반 HTML 모드
+                if is_emote:
+                    style_attr = 'width:100px; height:100px; object-fit:contain; vertical-align:middle;'
+                else:
+                    style_attr = 'width:100% !important; max-width:500px !important; height:auto;'
                 images_html += f'''
             <figure>
-                <img src="{img_path}" alt="{alt_text}" style="width: 100% !important; max-width:500px !important; height:auto;">
+                <img src="{img_path}" alt="{alt_text}" style="{style_attr}">
                 <figcaption>{alt_text}</figcaption>
             </figure>
             '''
@@ -274,74 +280,68 @@ class BlogHTMLConverter:
         '''
     
     def _markdown_to_html_simple(self, text: str, react_mode: bool = False) -> str:
-            """간단한 마크다운 → HTML 변환 (113259 방식으로 통일)"""
-            if not text:
-                return ""
-            # 1. 이스케이프된 줄바꿈 문자 정리
-            text = text.replace('\\\\n\\\\n', '\\n\\n')
-            text = text.replace('\\\\n', '\\n')
-                    # 6. **굵게** → <strong>굵게</strong>
-            text = re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', text)
-            # 7. *기울임* → <em>기울임</em>
-            text = re.sub(r'\*(.*?)\*', r'<em>\1</em>', text)
-            # 2. 추가 단어 단위 줄바꿈 (기존 쉼표 줄바꿈 유지하면서)
-            text = self._add_word_breaks_safe(text)
-            # 3. GIF 경로를 실제 이미지로 변환 (경로만 있는 형태)
-            def replace_gif_path(m):
-                path = m.group(1).replace("\\", "/")
-                if react_mode:
-                    style_obj = '{width: "auto", height: "auto", maxWidth: "100px"}'
-                    return f'\n\n<img src="../../../{path}" alt="" style={style_obj} />'
-                else:
-                    return f'\n\n<img src="../../../{path}" alt="" style="width:auto; height:auto; max-width:100px;">'
-            text = re.sub(r'\(([^)]+\.gif)\)', replace_gif_path, text)
-            
-            # 3-2. URL을 이미지 태그로 변환 (Airtable URL 포함)
-            def replace_image_url(m):
-                url = m.group(1)
-                if react_mode:
-                    style_obj = '{width: "100%", maxWidth: "500px", height: "auto"}'
-                    return f'\n\n<img src="{url}" alt="첨부 이미지" style={style_obj} />'
-                else:
-                    return f'\n\n<img src="{url}" alt="첨부 이미지" style="width:100%; max-width:500px; height:auto;">'
-            
-            # (https://...) 형태의 URL을 이미지로 변환
-            text = re.sub(r'\((https?://[^)\s]+)\)', replace_image_url, text)
-            
-                 # 4. 모든 줄바꿈을 <br>로 변환 (113259 방식)
-            if react_mode:
-                text = text.replace('\n\n', '<br /><br />')  # React 자체 닫힘 태그
-                text = text.replace('\n', '<br />')
-            else:
-                text = text.replace('\n\n', '<br><br>')  # 빈 줄 → <br><br>
-                text = text.replace('\n', '<br>')        # 단일 줄바꿈 → <br>
-             
-            # 5. 후처리: 조건부 <br> 정리
-            # 5-1. <> 안의 ,.!? 뒤 <br> 제거
-            def fix_angle_brackets(match):
-                content = match.group(1)
-                # <> 안에서 ,.!? 뒤의 <br> 제거
-                content = re.sub(r'([,.!?])<br>', r'\1', content)
-                return f'<{content}>'
-             
-            text = re.sub(r'<([^>]*)>', fix_angle_brackets, text)
-             
-            # 5-2. "" 안의 !?. 뒤 <br><br>를 <br>로 변경 (빈 줄 → 단순 줄바꿈)
-            def fix_quotes(match):
-                content = match.group(1)
-                # "" 안에서 !?. 뒤의 <br><br>를 <br>로 변경
-                content = re.sub(r'([!?.])<br><br>', r'\1<br>', content)
-                return f'"{content}"'
-             
-            text = re.sub(r'"([^"]*)"', fix_quotes, text)
-             
-            # 5-3. </em> 뒤에 <br><br> 추가 (이탈릭체 뒤 빈 줄)
-            text = re.sub(r'(</em>)<br>([가-힣A-Za-z0-9])', r'\1<br><br>\2', text)
-             
-            # 6. 하나의 <p> 태그로 감싸기
-            text = f'<p>{text}</p>'
-            return text
+        """간단한 마크다운 → HTML 변환 (113259 방식으로 통일)"""
+        if not text:
+            return ""
 
+        # 1) 이스케이프 줄바꿈 정리
+        text = text.replace('\\n\\n', '\n\n').replace('\\n', '\n')
+
+        # 2) (중요) 이모티콘 URL -> <img> 변환 (airtable / .gif)
+        def _emote_img(u: str) -> str:
+            if react_mode:
+                # React는 style 객체
+                return f'<img src="{u}" alt="" style={{width:"100px",height:"100px",objectFit:"contain",verticalAlign:"middle"}} />'
+            else:
+                return f'<img src="{u}" alt="" style="width:100px;height:100px;object-fit:contain;vertical-align:middle;">'
+
+        # (1) 괄호형 ( ... )
+        text = re.sub(
+            r'[（\(]\s*(https?://[^)\s]*?(?:airtableusercontent\.com|\.gif)[^)\s]*)\s*[）\)]',
+            lambda m: _emote_img(m.group(1)), text
+        )
+        # (2) 평문 URL
+        text = re.sub(
+            r'(https?://[^\s<>"\)]*?(?:airtableusercontent\.com|\.gif)[^\s<>"\)]*)',
+            lambda m: _emote_img(m.group(1)), text
+        )
+
+        # 3) 마크다운 <strong>/<em> 등
+        text = re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', text)
+        text = re.sub(r'\*(.*?)\*', r'<em>\1</em>', text)
+
+        # 4) 단어 줄바꿈 보정
+        text = self._add_word_breaks_safe(text)
+
+        # 5) 줄바꿈 -> <br>
+        if react_mode:
+            text = text.replace('\n\n', '<br /><br />').replace('\n', '<br />')
+        else:
+            text = text.replace('\n\n', '<br><br>').replace('\n', '<br>')
+
+        # 6) 후처리들(각종 <br> 보정) 그대로
+        # 6-1. <> 안의 ,.!? 뒤 <br> 제거
+        def fix_angle_brackets(match):
+            content = match.group(1)
+            # <> 안에서 ,.!? 뒤의 <br> 제거
+            content = re.sub(r'([,.!?])<br>', r'\1', content)
+            return f'<{content}>'
+        
+        text = re.sub(r'<([^>]*)>', fix_angle_brackets, text)
+        
+        # 6-2. "" 안의 !?. 뒤 <br><br>를 <br>로 변경 (빈 줄 → 단순 줄바꿈)
+        def fix_quotes(match):
+            content = match.group(1)
+            # "" 안에서 !?. 뒤의 <br><br>를 <br>로 변경
+            content = re.sub(r'([!?.])<br><br>', r'\1<br>', content)
+            return f'"{content}"'
+        
+        text = re.sub(r'"([^"]*)"', fix_quotes, text)
+        
+        # 6-3. </em> 뒤에 <br><br> 추가 (이탈릭체 뒤 빈 줄)
+        text = re.sub(r'(</em>)<br>([가-힣A-Za-z0-9])', r'\1<br><br>\2', text)
+        
+        return f'<p>{text}</p>'
 
     def _add_word_breaks_safe(self, text: str) -> str:
         """기존 줄바꿈을 유지하면서 긴 줄만 3-6단어씩 끊기"""

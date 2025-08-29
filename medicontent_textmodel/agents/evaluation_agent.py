@@ -292,8 +292,6 @@ def auto_update_medicontent_posts(evaluation_data: Dict[str, Any], evaluation_fi
                             for key in ['actualPostDataRequestPostIdFull', 'medicontentPostId', 'postId']:
                                 if key in log_entry and log_entry[key]:
                                     post_id = str(log_entry[key])
-                                    if not post_id.startswith('post_'):
-                                        post_id = f"post_{post_id}"
                                     break
                             if post_id:
                                 break
@@ -301,8 +299,6 @@ def auto_update_medicontent_posts(evaluation_data: Dict[str, Any], evaluation_fi
                     for key in ['actualPostDataRequestPostIdFull', 'medicontentPostId', 'postId']:
                         if key in input_logs and input_logs[key]:
                             post_id = str(input_logs[key])
-                            if not post_id.startswith('post_'):
-                                post_id = f"post_{post_id}"
                             break
                 
                 if post_id:
@@ -635,6 +631,59 @@ _MKDOWN_IMG_RE = re.compile(r'!\[[^\]]*\]\(([^)]+)\)', re.IGNORECASE)   # ![alt]
 _HTML_IMG_RE   = re.compile(r'<img\b[^>]*\bsrc\s*=[^>]*>', re.IGNORECASE)  # <img src=""> 개수로 카운팅
 _PAREN_IMG_RE  = re.compile(r'\(([^()\s]+?\.' + _IMG_EXT_RE + r')\)', re.IGNORECASE)  # (file.ext)
 
+def _clean_text_for_json(text: str) -> str:
+    """JSON 안전을 위한 텍스트 정제 - 제어 문자 제거"""
+    if not isinstance(text, str):
+        return ""
+    
+    # 제어 문자 제거 (JSON에서 허용되지 않는 문자들)
+    import unicodedata
+    cleaned = ""
+    for char in text:
+        # 제어 문자인지 확인 (U+0000 ~ U+001F, U+007F ~ U+009F)
+        if unicodedata.category(char).startswith('C'):
+            # 제어 문자는 공백으로 대체
+            cleaned += ' '
+        else:
+            cleaned += char
+    
+    # 추가 정제: 특수 제어 문자들
+    cleaned = cleaned.replace('\x00', ' ')  # null character
+    cleaned = cleaned.replace('\x01', ' ')  # start of heading
+    cleaned = cleaned.replace('\x02', ' ')  # start of text
+    cleaned = cleaned.replace('\x03', ' ')  # end of text
+    cleaned = cleaned.replace('\x04', ' ')  # end of transmission
+    cleaned = cleaned.replace('\x05', ' ')  # enquiry
+    cleaned = cleaned.replace('\x06', ' ')  # acknowledge
+    cleaned = cleaned.replace('\x07', ' ')  # bell
+    cleaned = cleaned.replace('\x08', ' ')  # backspace
+    cleaned = cleaned.replace('\x0b', ' ')  # vertical tab
+    cleaned = cleaned.replace('\x0c', ' ')  # form feed
+    cleaned = cleaned.replace('\x0e', ' ')  # shift out
+    cleaned = cleaned.replace('\x0f', ' ')  # shift in
+    cleaned = cleaned.replace('\x10', ' ')  # data link escape
+    cleaned = cleaned.replace('\x11', ' ')  # device control 1
+    cleaned = cleaned.replace('\x12', ' ')  # device control 2
+    cleaned = cleaned.replace('\x13', ' ')  # device control 3
+    cleaned = cleaned.replace('\x14', ' ')  # device control 4
+    cleaned = cleaned.replace('\x15', ' ')  # negative acknowledge
+    cleaned = cleaned.replace('\x16', ' ')  # synchronous idle
+    cleaned = cleaned.replace('\x17', ' ')  # end of transmission block
+    cleaned = cleaned.replace('\x18', ' ')  # cancel
+    cleaned = cleaned.replace('\x19', ' ')  # end of medium
+    cleaned = cleaned.replace('\x1a', ' ')  # substitute
+    cleaned = cleaned.replace('\x1b', ' ')  # escape
+    cleaned = cleaned.replace('\x1c', ' ')  # file separator
+    cleaned = cleaned.replace('\x1d', ' ')  # group separator
+    cleaned = cleaned.replace('\x1e', ' ')  # record separator
+    cleaned = cleaned.replace('\x1f', ' ')  # unit separator
+    cleaned = cleaned.replace('\x7f', ' ')  # delete
+    
+    # 연속된 공백을 하나로 축약
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+    
+    return cleaned
+
 def _extract_images_and_clean_text(raw: str) -> Tuple[str, int]:
     """
     - 이미지 개수: 마크다운/HTML/괄호형 파일명 3종을 합산 (중복 방지 위해 순차 제거)
@@ -661,6 +710,9 @@ def _extract_images_and_clean_text(raw: str) -> Tuple[str, int]:
     # 4) 줄바꿈/탭 제거(→ 공백 1칸), 공백 다중 축약
     text = text.replace('\r', ' ').replace('\n', ' ').replace('\t', ' ')
     text = re.sub(r'\s+', ' ', text).strip()
+    
+    # 5) JSON 안전을 위한 추가 정제
+    text = _clean_text_for_json(text)
 
     image_count = len(md_hits) + len(html_hits) + len(paren_hits)
     return text, image_count
@@ -669,26 +721,75 @@ def _calculate_morphemes(text: str) -> int:
     """형태소 개수 계산 (kiwipiepy 사용)"""
     from kiwipiepy import Kiwi
     kiwi = Kiwi()
-    result = kiwi.analyze(text)
-    tokens, score = result[0]
-    morphemes = [token.form for token in tokens]
-    return len(morphemes)
+
+    # 형태소 토큰화
+    tokens = kiwi.tokenize(text)
+    print(f"DEBUG - 전체 토큰 개수: {len(tokens)}")
+
+    # 내용어만 추출
+    KEEP = {"NNG","NNP","NNB","NP","NR","VV","VA","VX","VCP","VCN","MM"}
+    content = [t for t in tokens if t.tag in KEEP]
+    print(f"DEBUG - 내용어 토큰 개수: {len(content)}")
+    
+    # 복합명사 간단히 결합 (인접 NNG + NNG)
+    final_tokens = []
+    i = 0
+    while i < len(content):
+        if content[i].tag == "NNG" and i+1 < len(content) and content[i+1].tag == "NNG":
+            combined = content[i].form + content[i+1].form
+            final_tokens.append(combined)
+            print(f"DEBUG - 복합명사: {content[i].form} + {content[i+1].form} -> {combined}")
+            i += 2
+        elif content[i].tag in {"VV","VA","VX"} and i+1 < len(content) and content[i+1].tag == "VX":
+            # 보조용언(VX) 합치기
+            combined = content[i].form + content[i+1].form + '다'
+            final_tokens.append(combined)
+            print(f"DEBUG - 보조용언: {content[i].form} + {content[i+1].form} -> {combined}")
+            i += 2
+        elif content[i].tag in {"VV","VA","VCP","VCN"}:
+            # 동사/형용사 -> '다' 붙여 표제어화
+            lemma = content[i].form + "다"
+            final_tokens.append(lemma)
+            i += 1
+        else:
+            final_tokens.append(content[i].form)
+            i += 1
+
+    print(f"DEBUG - 최종 형태소 개수: {len(final_tokens)}")
+    print(f"DEBUG - 최종 형태소 예시: {final_tokens[:10]}")
+    return len(final_tokens)
 
 def _count_syllables_extended(text: str) -> int:
-    """음절 개수 계산 (한글 + 영문)"""
-    import unicodedata
-    text = unicodedata.normalize('NFC', text)
-    syllables = 0
-    for ch in text:
-        if 0xAC00 <= ord(ch) <= 0xD7A3:  # 한글 완성형
-            syllables += 1
-        elif ch.isascii() and ch.isalpha():  # 영문만
-            syllables += 1
-    return syllables
+    """어절 카운트 (공백 기준 분리)"""
+    # 1) HTML 태그 제거
+    clean = re.sub(r'<[^>]*>', ' ', text)
+    
+    # 2) 숫자/기호/이모지/마크업 간단 제거
+    clean = re.sub(r'[*_`<>\[\]()…·•"""\'!?.,:;]|[\U0001F300-\U0001FAFF]', ' ', clean)
+    
+    # 3) 연속된 공백을 하나로 통일
+    clean = re.sub(r'\s+', ' ', clean).strip()
+    
+    # 4) 공백 기준으로 어절 분리 (한글/영문이 포함된 것만)
+    words = [word for word in clean.split() if re.search(r'[가-힣A-Za-z]', word)]
+    
+    print(f"DEBUG - 어절 카운트: '{clean[:50]}...' -> {len(words)}개 어절")
+    return len(words)
 
-def calculate_seo_metrics(title: str, content: str) -> Dict[str, int]:
-    """SEO 평가용 실제 측정값 (렌더 결과 기준: 이미지/alt/파일명 제거, 줄바꿈 제외)"""
+def calculate_seo_metrics(title: str, content: str, html_content: str = None) -> Dict[str, int]:
+    """SEO 평가용 실제 측정값 (렌더 결과 기준: 이미지/alt/파일명 제거, 줄바꿈 제외)
+    
+    Args:
+        title: 제목 텍스트 (TXT에서 추출)
+        content: 본문 텍스트 (TXT에서 추출) 
+        html_content: HTML 콘텐츠 (본문 이미지 개수 계산용, 없으면 content에서 계산)
+    """
     import re
+
+    # 입력 텍스트 정제 (JSON 안전)
+    title = _clean_text_for_json(title) if title else ""
+    content = _clean_text_for_json(content) if content else ""
+    html_content = _clean_text_for_json(html_content) if html_content else ""
 
     # --- 제목(그대로) ---
     title_with_space = len(title)
@@ -696,8 +797,8 @@ def calculate_seo_metrics(title: str, content: str) -> Dict[str, int]:
     print(f"DEBUG - 제목: '{title}'")
     print(f"DEBUG - 공백 포함: {title_with_space}, 공백 제외: {title_without_space}")
 
-    # --- 본문: 정제 + 이미지 카운트 ---
-    cleaned, image_count = _extract_images_and_clean_text(content)
+    # --- 본문: 정제 (TXT 기준) ---
+    cleaned, _ = _extract_images_and_clean_text(content)  # TXT에서는 이미지 개수 무시
 
     # 3/4. 본문 글자수
     content_with_space = len(cleaned)
@@ -723,6 +824,17 @@ def calculate_seo_metrics(title: str, content: str) -> Dict[str, int]:
         r'완전', r'필수', r'강력추천'
     ]
     abusing_count = sum(len(re.findall(pat, cleaned, re.IGNORECASE)) for pat in abusing_patterns)
+
+    # 9. 본문 이미지 개수 - HTML에서 <img> 태그만 계산
+    if html_content:
+        # HTML에서 <img> 태그 개수만 계산
+        html_img_count = len(_HTML_IMG_RE.findall(html_content))
+        print(f"DEBUG - 본문 이미지: HTML에서 <img> 태그 {html_img_count}개 발견")
+        image_count = html_img_count
+    else:
+        # HTML이 없으면 기존 방식으로 TXT에서 계산
+        _, image_count = _extract_images_and_clean_text(content)
+        print(f"DEBUG - 본문 이미지: TXT에서 {image_count}개 발견 (HTML 없음)")
 
     return {
         1: title_with_space,
@@ -843,7 +955,18 @@ def _call_llm(model, prompt: str) -> Dict[str, Any]:
             pass
     if not text:
         raise RuntimeError("LLM 응답 파싱 실패(빈 응답). 프롬프트 또는 안전필터 확인.")
-    return _extract_json(text)
+    
+    # JSON 파싱 전에 텍스트 정제
+    text = _clean_text_for_json(text)
+    
+    try:
+        return _extract_json(text)
+    except json.JSONDecodeError as e:
+        print(f"⚠️ JSON 파싱 실패, 텍스트 정제 후 재시도: {e}")
+        # 추가 정제 시도
+        text = re.sub(r'[\x00-\x1f\x7f-\x9f]', ' ', text)
+        text = re.sub(r'\s+', ' ', text).strip()
+        return _extract_json(text)
 
 # ===== 재귀 탐색 도구 =====
 def _iter_paths(obj: Any, prefix: Tuple=()) -> Iterable[Tuple[Tuple, Any]]:
@@ -1125,6 +1248,10 @@ def apply_patches(title: str, content: str, patch_obj: Dict[str, Any]) -> Tuple[
 
 # ===== 프롬프트 빌드 =====
 def build_eval_prompt(title: str, content: str, prompt_path: Path = EVAL_PROMPT_PATH, seo_metrics: Dict[int, int] = None) -> str:
+    # 입력 텍스트 정제 (JSON 안전)
+    title = _clean_text_for_json(title) if title else ""
+    content = _clean_text_for_json(content) if content else ""
+    
     base = _read_text(prompt_path)
 
     # SEO 모드에서 실제 측정값과 정답을 프롬프트에 포함
@@ -1132,39 +1259,39 @@ def build_eval_prompt(title: str, content: str, prompt_path: Path = EVAL_PROMPT_
         # 각 항목별 정확한 점수 계산
         def get_correct_score(item_num, value):
             if item_num == 1:  # 제목 글자수 (공백 포함)
-                if 20 <= value <= 48: return 12
-                elif 49 <= value <= 69 or value > 69: return 9
-                elif 15 <= value <= 19: return 6
+                if 26 <= value <= 55 : return 12
+                elif 16 <= value <= 25 or 56 <= value <= 69 : return 9
+                elif 8 <= value <= 15 or 70 <= 80 : return 6
                 else: return 3
             elif item_num == 2:  # 제목 글자수 (공백 제외)
-                if 13 <= value <= 40: return 12
-                elif 41 <= value <= 56 or value > 56: return 9
-                elif 8 <= value <= 12: return 6
+                if 19 <= value <= 40: return 12
+                elif 14 <= value <= 18 or 41<= value <= 50: return 9
+                elif 8 <= value <= 13 or 51 <= value <=62: return 6
                 else: return 3
             elif item_num == 3:  # 본문 글자수 (공백 포함)
                 if 1233 <= value <= 2628: return 15
-                elif 2629 <= value <= 4113 or value > 4113: return 12
-                elif 612 <= value <= 1232: return 9
+                elif 986 <= value <= 1232 or 2629 <= value <= 3664 : return 12
+                elif 542 <= value <= 985 or 3665 <= value <= 4523 : return 9
                 else: return 5
             elif item_num == 4:  # 본문 글자수 (공백 제외)
                 if 936 <= value <= 1997: return 15
-                elif 1998 <= value <= 3400 or value > 3400: return 12
-                elif 512 <= value <= 935: return 9
+                elif 685 <= value <= 935 or 1998 <= value <= 2634 : return 12
+                elif 423 <= value <= 684 or 2635 <= value <= 3529 : return 9
                 else: return 5
             elif item_num == 5:  # 총 형태소 개수
-                if 482 <= value <= 1692: return 10
-                elif 1693 <= value <= 2542 or value > 2542: return 8
-                elif 183 <= value <= 481: return 6
+                if 249 <= value <= 482 : return 10
+                elif 193 <= value <= 248 or 483 <= value <= 562: return 8
+                elif  128 <= value <= 192 or 563 <= value <= 694: return 6
                 else: return 3
             elif item_num == 6:  # 총 음절 개수
-                if 789 <= value <= 1997: return 10
-                elif 1998 <= value <= 2986 or value > 2986: return 8
-                elif 184 <= value <= 788: return 6
+                if 298 <= value <= 632: return 10
+                elif 214 <= value <= 297 or 633 <= value <= 825: return 8
+                elif 152 <= value <= 213 or 826 <= value <= 998: return 6
                 else: return 3
             elif item_num == 7:  # 총 단어 개수
-                if 82 <= value <= 892: return 10
-                elif 893 <= value <= 1342 or value > 1342: return 8
-                elif 54 <= value <= 81: return 6
+                if 82 <= value <= 193: return 10
+                elif 54 <= value <= 81 or 194 <= value <= 289 : return 8
+                elif 31 <= value <= 53 or 290 <= value <=412: return 6
                 else: return 3
             elif item_num == 8:  # 어뷰징 단어 개수
                 if 0 <= value <= 7: return 8
@@ -1199,6 +1326,10 @@ def build_eval_prompt(title: str, content: str, prompt_path: Path = EVAL_PROMPT_
 
 def build_regen_prompt(title: str, content: str, criteria_mode: str,
                        violations: List[int], hints: List[str]) -> str:
+    # 입력 텍스트 정제 (JSON 안전)
+    title = _clean_text_for_json(title) if title else ""
+    content = _clean_text_for_json(content) if content else ""
+    
     base = _read_text(REGEN_PROMPT_PATH)
     vnames = [f"{CHECKLIST_NAMES[i]}({i})" for i in violations]
     violations_json = json.dumps(vnames, ensure_ascii=False)
@@ -1283,16 +1414,62 @@ def get_seo_grade_by_actual_value(actual_value: int, item_num: int) -> str:
     
     # content_evaluation_prompt.txt의 등급 기준 (min, max만 사용)
     grade_criteria = {
-        1: {'A': (20, 48), 'B': (49, 69), 'C': (15, 19), 'D': (0, 14)},        # 제목 글자수 (공백 포함)
-        2: {'A': (13, 40), 'B': (41, 56), 'C': (8, 12), 'D': (0, 7)},         # 제목 글자수 (공백 제외)
-        3: {'A': (1233, 2628), 'B': (2629, 4113), 'C': (612, 1232), 'D': (0, 611)},     # 본문 글자수 (공백 포함)
-        4: {'A': (936, 1997), 'B': (1998, 3400), 'C': (512, 935), 'D': (0, 511)},       # 본문 글자수 (공백 제외)
-        5: {'A': (482, 1692), 'B': (1693, 2542), 'C': (183, 481), 'D': (0, 182)},          # 총 형태소 개수
-        6: {'A': (789, 1997), 'B': (1998, 2986), 'C': (184, 788), 'D': (0, 183)},          # 총 음절 개수
-        7: {'A': (82, 892), 'B': (893, 1342), 'C': (54, 81), 'D': (0, 53)},              # 총 단어 개수
-        8: {'A': (0, 7), 'B': (8, 15), 'C': (16, 20), 'D': (21, 25)},                   # 어뷰징 단어 개수
-        9: {'A': (3, 11), 'B': (12, 30), 'C': (31, 50), 'D': (0, 2)}                    # 본문 이미지
+        1: {
+            'A': [(26, 55)], 
+            'B': [(16, 25), (56, 69)], 
+            'C': [(8, 15), (70, 80)], 
+            'D': [(0, 7), (81, 999)]
+        },        # 제목 글자수 (공백 포함)
+        2: {
+            'A': [(19, 40)], 
+            'B': [(14, 18), (41, 50)], 
+            'C': [(8, 13), (51, 62)], 
+            'D': [(0, 7), (63, 999)]
+        },         # 제목 글자수 (공백 제외)
+        3: {
+            'A': [(1233, 2628)], 
+            'B': [(986, 1232), (2629, 3664)], 
+            'C': [(542, 985), (3665, 4523)], 
+            'D': [(0, 541), (4524, 999999)]
+        },     # 본문 글자수 (공백 포함)
+        4: {
+            'A': [(936, 1997)], 
+            'B': [(685, 935), (1998, 2634)], 
+            'C': [(423, 684), (2635, 3529)], 
+            'D': [(0, 422), (3530, 999999)]
+        },       # 본문 글자수 (공백 제외)
+        5: {
+            'A': [(249, 482)], 
+            'B': [(193, 248), (483, 562)], 
+            'C': [(128, 192), (563, 694)], 
+            'D': [(0, 127), (695, 999999)]
+        },          # 총 형태소 개수
+        6: {
+            'A': [(298, 632)], 
+            'B': [(214, 297), (633, 825)], 
+            'C': [(152, 213), (826, 998)], 
+            'D': [(0, 151), (999, 999999)]
+        },          # 총 음절 개수
+        7: {
+            'A': [(82, 193)], 
+            'B': [(54, 81), (194, 289)], 
+            'C': [(31, 53), (290, 412)], 
+            'D': [(0, 30), (413, 999999)]
+        },              # 총 단어 개수
+        8: {
+            'A': [(0, 7)], 
+            'B': [(8, 14), (22, 30)], 
+            'C': [(15, 21), (31, 40)], 
+            'D': [(0, 21), (41, 999)]
+        },                   # 어뷰징 단어 개수
+        9: {
+            'A': [(3, 11)], 
+            'B': [(4, 11), (12, 21)], 
+            'C': [(4, 11), (22, 30)], 
+            'D': [(0, 3), (31, 999)]
+        },                    # 본문 이미지
     }
+    
     
     if item_num not in grade_criteria:
         return "N/A"
@@ -1300,19 +1477,21 @@ def get_seo_grade_by_actual_value(actual_value: int, item_num: int) -> str:
     criteria = grade_criteria[item_num]
     
     # 값이 속한 구간을 찾아서 해당 등급 반환
-    for grade, (min_val, max_val) in criteria.items():
-        if min_val <= actual_value <= max_val:
-            return grade
+    for grade, ranges in criteria.items():
+        for min_val, max_val in ranges:
+            if min_val <= actual_value <= max_val:
+                return grade
     
     # 어떤 구간에도 속하지 않으면 가장 가까운 구간의 등급 선택
     closest_grade = "D"
     min_distance = float('inf')
     
-    for grade, (min_val, max_val) in criteria.items():
-        distance = min(abs(actual_value - min_val), abs(actual_value - max_val))
-        if distance < min_distance:
-            min_distance = distance
-            closest_grade = grade
+    for grade, ranges in criteria.items():
+        for min_val, max_val in ranges:
+            distance = min(abs(actual_value - min_val), abs(actual_value - max_val))
+            if distance < min_distance:
+                min_distance = distance
+                closest_grade = grade
     
     return closest_grade
 
@@ -1410,10 +1589,50 @@ def run_single_mode(criteria_mode: str = "표준",
     if not content:
         content = "제목 평가용 더미 콘텐츠입니다."
 
-    # SEO 모드에서 실제 측정값 계산 (정제 적용)
+    # HTML 파일 찾기 (SEO 모드에서 본문 이미지 계산용)
+    html_content = None
+    html_file = None
+    if evaluation_mode == "seo":
+        # TXT 파일과 같은 디렉토리에서 연관된 HTML 파일 찾기
+        txt_dir = content_path.parent
+        txt_stem = content_path.stem
+        
+        # 가능한 HTML 파일 패턴들
+        html_patterns = [
+            f"{txt_stem}.html",                    # 20250825_205923_title_content_result.html
+            f"{txt_stem.replace('_title_content_result', '')}.html",  # 20250825_205923.html
+            f"{txt_stem.replace('_content_result', '')}.html",        # 20250825_205923.html  
+            f"{txt_stem.replace('_result', '')}.html",                # 20250825_205923_title_content.html
+        ]
+        
+        # 추가로 타임스탬프 부분만 사용한 패턴들
+        timestamp_part = txt_stem.split('_')[0] + '_' + txt_stem.split('_')[1] if '_' in txt_stem else txt_stem
+        html_patterns.extend([
+            f"{timestamp_part}.html",
+            f"{timestamp_part}_content.html",
+            f"{timestamp_part}_result.html"
+        ])
+        
+        for pattern in html_patterns:
+            html_candidate = txt_dir / pattern
+            if html_candidate.exists():
+                html_file = html_candidate
+                try:
+                    html_content = _read_text(html_file)
+                    print(f"✅ HTML 파일 발견: {html_file.name} ({len(html_content)}자)")
+                    break
+                except Exception as e:
+                    print(f"⚠️ HTML 파일 읽기 실패 {html_file.name}: {e}")
+                    continue
+        
+        if not html_file:
+            print(f"⚠️ HTML 파일을 찾을 수 없습니다. TXT 파일에서 이미지 개수 계산")
+            print(f"   검색한 패턴: {html_patterns}")
+
+    # SEO 모드에서 실제 측정값 계산 (HTML 콘텐츠 포함)
     seo_metrics = {}
     if evaluation_mode == "seo":
-        seo_metrics = calculate_seo_metrics(title, content)
+        seo_metrics = calculate_seo_metrics(title, content, html_content)
 
     # 1) 기준/CSV/리포트 가중치 로드
     if evaluation_mode == "seo":
@@ -1564,9 +1783,6 @@ def run_single_mode(criteria_mode: str = "표준",
             
             # ⭐ UI checklist 로그 생성
             generate_ui_checklist_logs(out, str(out_path))
-            
-            # ⭐ 자동 DB 업데이트
-            auto_update_medicontent_posts(out, str(out_path))
 
             if patched_once:
                 patched_path = log_dir_path / f"{current_timestamp}_content.patched.json"
@@ -1661,9 +1877,6 @@ def run_single_mode(criteria_mode: str = "표준",
                 # ⭐ UI checklist 로그 생성
                 generate_ui_checklist_logs(out, str(out_path))
                 
-                # ⭐ 자동 DB 업데이트
-                auto_update_medicontent_posts(out, str(out_path))
-                
                 return
                 
 
@@ -1754,7 +1967,8 @@ def run_single_mode(criteria_mode: str = "표준",
         
         # ⭐ SEO 모드에서 재생성 후 메트릭 재계산!
         if evaluation_mode == "seo":
-            seo_metrics = calculate_seo_metrics(title, content)  # ← 재계산!
+            # 재생성 후에도 HTML 콘텐츠를 동일하게 사용 (이미지 개수는 HTML 기준 유지)
+            seo_metrics = calculate_seo_metrics(title, content, html_content)  # ← 재계산!
             eval_prompt = build_eval_prompt(title, content, eval_prompt_path, seo_metrics)
         else:
             eval_prompt = build_eval_prompt(title, content, eval_prompt_path)
@@ -1783,8 +1997,11 @@ def run(criteria_mode: str = "표준",
     메인 실행 함수 - 기본적으로 의료법과 SEO 둘 다 실행
     """
     
+    print(f"🚀 Evaluation 시작 - evaluation_mode: {evaluation_mode}")
+    print(f"📋 매개변수 확인: criteria_mode={criteria_mode}, max_loops={max_loops}, auto_yes={auto_yes}")
+    
     if evaluation_mode == "both":
-        print("🔄 통합 평가 모드: 의료법 + SEO 평가를 순차 실행합니다")
+        print("🔄 순차 평가 모드: 의료법 → SEO 평가를 순차 실행합니다")
         print("=" * 60)
         
         # 1) 의료법 평가 실행
@@ -1840,8 +2057,9 @@ def run(criteria_mode: str = "표준",
             print(f"❌ SEO 평가 실패: {e}")
         
         print("=" * 60)
-        print("🎉 통합 평가 완료! 의료법과 SEO 평가 결과를 각각 확인하세요.")
+        print("🎉 순차 평가 완료! 의료법과 SEO 평가가 각각 독립적으로 실행되었습니다.")
         
+        return None
     else:
         # 개별 모드 실행
         print(f"🎯 개별 평가 모드: {evaluation_mode} 평가만 실행합니다")
@@ -1880,3 +2098,4 @@ if __name__ == "__main__":
         csv_path=(args.csv_path or None),
         report_path=(args.report_path or None),
         evaluation_mode=args.evaluation_mode)
+

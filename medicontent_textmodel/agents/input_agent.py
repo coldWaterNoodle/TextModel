@@ -488,6 +488,8 @@ class InputAgent:
         print(f"⚠️ postId {post_id}에 해당하는 기존 case_id를 찾을 수 없음")
         return None
 
+
+
     def update_log(self, case_id: str, updated_data: dict, mode: str = "use") -> bool:
         """기존 로그를 case_id로 찾아서 업데이트"""
         date_dir = _ensure_date_log_dir(mode)
@@ -520,6 +522,8 @@ class InputAgent:
         updated_data["status"] = "final"
         self.save_log(updated_data, mode)  # save_log에서 created_at, updated_at 모두 설정
         return False
+
+
 
     def _finalize_and_save(self, data: dict, mode: str) -> dict:
         # ensure prefixed image keys
@@ -1153,6 +1157,87 @@ class InputAgent:
         }
         # data["clinical_context"] = self._build_clinical_context(data)  # 임시 주석 처리 - 성능 개선
         return self._finalize_and_save(data, mode=mode)
+
+    def update_images_with_google_drive_urls(self, case_id: str, google_drive_urls: dict, mode: str = "use") -> bool:
+        """
+        input 로그에서 이미지 URL을 Google Drive URL로 업데이트
+        
+        Args:
+            case_id: 업데이트할 case_id
+            google_drive_urls: {"question3_visit_images": [urls], "question5_therapy_images": [urls], "question7_result_images": [urls]}
+            mode: "use" 또는 "test"
+            
+        Returns:
+            업데이트 성공 여부
+        """
+        try:
+            print(f"🔄 Google Drive URL로 input 로그 업데이트: case_id={case_id}")
+            
+            # 로그 파일 찾기
+            log_dir = _ensure_date_log_dir(mode)
+            log_files = list(log_dir.glob("*_input_logs.json"))
+            
+            if not log_files:
+                print(f"❌ 로그 파일을 찾을 수 없음: {log_dir}")
+                return False
+            
+            # 최신 로그 파일 사용
+            latest_log_file = max(log_files, key=lambda x: x.stat().st_mtime)
+            print(f"📁 로그 파일: {latest_log_file}")
+            
+            # 로그 데이터 읽기
+            with open(latest_log_file, 'r', encoding='utf-8') as f:
+                logs_data = json.load(f)
+            
+            if not isinstance(logs_data, list):
+                print("❌ 로그 데이터가 배열 형식이 아님")
+                return False
+            
+            # case_id로 해당 로그 찾기
+            target_log_index = None
+            for i, log_entry in enumerate(logs_data):
+                if log_entry.get("case_id") == case_id:
+                    target_log_index = i
+                    break
+            
+            if target_log_index is None:
+                print(f"❌ case_id {case_id}에 해당하는 로그를 찾을 수 없음")
+                return False
+            
+            # 이미지 URL 업데이트
+            updated_count = 0
+            target_log = logs_data[target_log_index]
+            
+            for image_field, urls in google_drive_urls.items():
+                if not urls or image_field not in target_log:
+                    continue
+                
+                images = target_log[image_field]
+                if not isinstance(images, list):
+                    continue
+                
+                # 이미지 개수에 맞춰 Google Drive URL 할당
+                for i, image in enumerate(images):
+                    if i < len(urls) and urls[i]:
+                        old_url = image.get("url", "")
+                        image["url"] = urls[i]  # Google Drive URL로 업데이트
+                        print(f"✅ {image_field}[{i}]: {old_url} → {urls[i]}")
+                        updated_count += 1
+            
+            if updated_count > 0:
+                # 업데이트된 로그 저장
+                with open(latest_log_file, 'w', encoding='utf-8') as f:
+                    json.dump(logs_data, f, ensure_ascii=False, indent=2)
+                
+                print(f"✅ {updated_count}개 이미지 URL 업데이트 완료")
+                return True
+            else:
+                print("ℹ️ 업데이트할 Google Drive URL이 없음")
+                return True
+                
+        except Exception as e:
+            print(f"❌ Google Drive URL 업데이트 실패: {e}")
+            return False
 
 # ------------------------------
 # 엔트리포인트
