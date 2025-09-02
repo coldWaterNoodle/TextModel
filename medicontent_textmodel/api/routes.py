@@ -273,8 +273,8 @@ async def update_post_data_request_status(record_id: str, status: str, results: 
         print(f"❌ 상태 업데이트 실패: {str(e)}")
         raise
 
-async def update_medicontent_post_status(post_id: str, status: str):
-    """Medicontent Posts 테이블의 상태 업데이트"""
+async def update_medicontent_post_status(post_id: str, status: str, extra_fields: Dict = None):
+    """Medicontent Posts 테이블의 상태 업데이트(+추가 필드 병합)"""
     try:
         from dotenv import load_dotenv
         load_dotenv()
@@ -314,15 +314,18 @@ async def update_medicontent_post_status(post_id: str, status: str):
         update_data = {
             'Status': status
         }
-        # Updated At 필드는 Airtable에서 자동으로 계산되므로 수동 설정 불필요
-        
-        # Created At이 없는 경우 현재 시간으로 설정
+        # Created At 보정
         existing_created_at = record['fields'].get('Created At')
         if not existing_created_at:
             update_data['Created At'] = current_time.strftime('%Y-%m-%d %H:%M:%S')
             print(f"✅ Created At 필드 추가: {update_data['Created At']}")
         else:
             print(f"ℹ️ Created At 이미 존재: {existing_created_at}")
+        
+        # 🔗 추가 필드 병합 (Title/HTML ID/Content/SEO/Legal 등)
+        if isinstance(extra_fields, dict) and extra_fields:
+            print(f"🔧 추가 업데이트 필드 병합: {list(extra_fields.keys())}")
+            update_data.update({k: v for k, v in extra_fields.items() if v is not None})
         
         print(f"🔄 실제 업데이트 요청: {update_data}")
         result = table.update(record['id'], update_data)
@@ -334,7 +337,7 @@ async def update_medicontent_post_status(post_id: str, status: str):
         print(f"📋 업데이트 후 상태: '{updated_status}'")
         
         if updated_status == status:
-            print(f"✅ Medicontent Posts 상태 업데이트 성공: {record['id']} ({post_id}) → {status}")
+            print(f"✅ Medicontent Posts 상태/필드 업데이트 성공: {record['id']} ({post_id}) → {status}")
         else:
             print(f"❌ Medicontent Posts 상태 업데이트 실패: 예상 '{status}', 실제 '{updated_status}'")
             raise Exception(f"상태 업데이트 실패: 예상 '{status}', 실제 '{updated_status}'")
@@ -522,6 +525,8 @@ async def all_agents_pipeline(request: ContentGenerationRequest):
         if not plan:
             raise Exception("Plan 생성 실패")
         
+
+        
         print("🚀 Step 4: TitleAgent 실행...")
         title = title_run(mode='use')  # 이미 저장된 plan 로그를 자동으로 찾아서 사용
         if not title:
@@ -607,6 +612,7 @@ async def all_agents_pipeline(request: ContentGenerationRequest):
             extracted_content = str(content)
             print(f"🎯 Content 추출 방법: str() 변환")
         
+        # 결과 묶기
         results = {
             "title": extracted_title,
             "content": extracted_content,
@@ -616,17 +622,118 @@ async def all_agents_pipeline(request: ContentGenerationRequest):
             }
         }
         
-        print(f"💾 추출된 Title: '{extracted_title[:50]}{'...' if len(extracted_title) > 50 else ''}'")
-        print(f"💾 추출된 Content 길이: {len(extracted_content)} 글자")
-        
-        print("💾 Step 7: 결과를 Airtable에 저장...")
+        # 🔄 Post Data Requests 업데이트 (title, content(txt), plan)
+        print("🔄 Post Data Requests 결과 업데이트 중...")
         try:
             await update_post_data_request_status(record_id, '완료', results)
             print("✅ Post Data Requests 업데이트 완료")
-        except Exception as update_error:
-            print(f"❌ Post Data Requests 업데이트 실패: {update_error}")
-            # 중요한 작업이므로 예외를 다시 발생시킴
-            raise
+        except Exception as pdr_error:
+            print(f"❌ Post Data Requests 업데이트 실패: {pdr_error}")
+            # Post Data Requests 업데이트 실패해도 전체 파이프라인은 성공으로 처리
+        
+        print(f"💾 추출된 Title: '{extracted_title[:50]}{'...' if len(extracted_title) > 50 else ''}'")
+        print(f"💾 추출된 Content 길이: {len(extracted_content)} 글자")
+        
+        # 🔧 HTML 변환 (Content 필드에 HTML 코드 저장)
+        html_content = None
+        try:
+            # HTML 변환기 import
+            from utils.html_converter import BlogHTMLConverter
+            
+            # content에서 JSON 구조 확인
+            if isinstance(content, dict) and content.get('assembled_markdown'):
+                # content.json 형태의 데이터 생성
+                content_json_data = {
+                    'title': extracted_title,
+                    'sections': content.get('sections', {}),
+                    'meta': content.get('meta', {})
+                }
+                
+                # BlogHTMLConverter를 사용해 HTML 변환
+                converter = BlogHTMLConverter()
+                # content.json 구조를 사용해 HTML 생성
+                html_content = converter.convert_json_to_html_from_data(content_json_data, react_mode=False)
+                print(f"✅ HTML 변환 완료: {len(html_content)}자")
+            else:
+                print("⚠️ content 구조가 예상과 다름, 마크다운을 기본 HTML로 변환")
+                # 기본 HTML 변환
+                html_content = f"""<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{extracted_title}</title>
+</head>
+<body>
+    <h1>{extracted_title}</h1>
+    <div class="content">
+        {extracted_content.replace(chr(10), '<br/>')}
+    </div>
+</body>
+</html>"""
+        except Exception as html_error:
+            print(f"⚠️ HTML 변환 실패: {html_error}, 마크다운 텍스트 사용")
+            html_content = f"""<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{extracted_title}</title>
+</head>
+<body>
+    <h1>{extracted_title}</h1>
+    <div class="content">
+        {extracted_content.replace(chr(10), '<br/>')}
+    </div>
+</body>
+</html>"""
+
+        # 🔧 Medicontent Posts에 핵심 필드 동시 업데이트 (Title/HTML ID/Content/Score들)
+        extra_update_fields = {
+            'Title': extracted_title or None,
+            'HTML ID': ((content.get('meta', {}) or {}).get('timestamp') + '_content') if (content.get('meta', {}) or {}).get('timestamp') else None,
+            'Content': html_content or extracted_content,  # HTML 코드 우선, 실패시 텍스트
+        }
+        
+        # 평가 결과에서 점수 추출
+        seo_score = None
+        legal_score = None
+        try:
+            if evaluation_result and isinstance(evaluation_result, dict):
+                print(f"🔍 평가 결과 구조 확인: {type(evaluation_result)}")
+                print(f"🔍 평가 결과 키들: {list(evaluation_result.keys())}")
+                
+                # evaluation_result가 dict 형태인지 확인하고 점수 추출
+                if 'scores' in evaluation_result:
+                    scores = evaluation_result['scores']
+                    if isinstance(scores, dict):
+                        print(f"🔍 Scores 키들: {list(scores.keys())}")
+                        
+                        # 개별 점수 추출 (both 모드에서)
+                        seo_score = scores.get('seo_score')
+                        legal_score = scores.get('medical_score')  # medical_score가 legal_score
+                        
+                        # 개별 점수가 없으면 weighted_total 사용
+                        if seo_score is None and legal_score is None:
+                            weighted_total = scores.get('weighted_total', 0)
+                            print(f"📊 개별 점수 없음, weighted_total 사용: {weighted_total}")
+                            # both 모드에서는 일단 둘 다 같은 값으로 설정
+                            seo_score = weighted_total
+                            legal_score = weighted_total
+                        
+                        print(f"📊 추출된 점수 - SEO: {seo_score}, Legal: {legal_score}")
+                else:
+                    print("⚠️ 평가 결과에 'scores' 키가 없음")
+                
+        except Exception as eval_error:
+            print(f"⚠️ 평가 결과 점수 추출 실패: {eval_error}")
+            print(f"🔍 evaluation_result 내용: {evaluation_result}")
+        
+        # 점수가 있는 경우에만 필드 추가
+        if seo_score is not None:
+            extra_update_fields['SEO Score'] = seo_score
+        if legal_score is not None:
+            extra_update_fields['Legal Score'] = legal_score
         
         print("🔄 Step 8: Medicontent Posts 상태를 '작업 완료'로 업데이트...")
         try:
@@ -810,16 +917,7 @@ async def input_agent_only(request: dict):
                 if updated:
                     print("✅ 기존 로그 업데이트 성공")
                     
-                    # isFinalSave가 true일 때만 Medicontent Posts 상태를 '리걸케어 작업 중'으로 변경
-                    is_final_save = request.get("isFinalSave", False)
-                    if "postId" in request and is_final_save:
-                        try:
-                            await update_medicontent_post_status(request["postId"], '리걸케어 작업 중')
-                            print(f"✅ Medicontent Posts 상태 업데이트 완료 (최종 저장): {request['postId']} → '리걸케어 작업 중'")
-                        except Exception as e:
-                            print(f"⚠️ Medicontent Posts 상태 업데이트 실패: {e}")
-                    elif "postId" in request:
-                        print(f"ℹ️ 임시 저장이므로 상태 변경하지 않음: {request['postId']}")
+
                     
                     return {
                         "status": "success",
@@ -831,16 +929,7 @@ async def input_agent_only(request: dict):
                 else:
                     print("⚠️ 기존 로그를 찾을 수 없어 새로 저장됨")
                     
-                    # isFinalSave가 true일 때만 Medicontent Posts 상태를 '리걸케어 작업 중'으로 변경
-                    is_final_save = request.get("isFinalSave", False)
-                    if "postId" in request and is_final_save:
-                        try:
-                            await update_medicontent_post_status(request["postId"], '리걸케어 작업 중')
-                            print(f"✅ Medicontent Posts 상태 업데이트 완료 (최종 저장): {request['postId']} → '리걸케어 작업 중'")
-                        except Exception as e:
-                            print(f"⚠️ Medicontent Posts 상태 업데이트 실패: {e}")
-                    elif "postId" in request:
-                        print(f"ℹ️ 임시 저장이므로 상태 변경하지 않음: {request['postId']}")
+
                     
                     return {
                         "status": "success",
@@ -854,16 +943,7 @@ async def input_agent_only(request: dict):
                 print("⚠️ 업데이트할 대상을 찾을 수 없어 새로 저장")
                 result = input_agent.collect(mode="use")
                 
-                # isFinalSave가 true일 때만 Medicontent Posts 상태를 '리걸케어 작업 중'으로 변경
-                is_final_save = request.get("isFinalSave", False)
-                if "postId" in request and is_final_save:
-                    try:
-                        await update_medicontent_post_status(request["postId"], '리걸케어 작업 중')
-                        print(f"✅ Medicontent Posts 상태 업데이트 완료 (최종 저장): {request['postId']} → '리걸케어 작업 중'")
-                    except Exception as e:
-                        print(f"⚠️ Medicontent Posts 상태 업데이트 실패: {e}")
-                elif "postId" in request:
-                    print(f"ℹ️ 임시 저장이므로 상태 변경하지 않음: {request['postId']}")
+
                 
                 return {
                     "status": "success",

@@ -491,8 +491,13 @@ class InputAgent:
 
 
     def update_log(self, case_id: str, updated_data: dict, mode: str = "use") -> bool:
-        """기존 로그를 case_id로 찾아서 업데이트"""
+        """기존 로그를 case_id 또는 post_id로 찾아서 업데이트"""
         date_dir = _ensure_date_log_dir(mode)
+        
+        # post_id도 함께 확인
+        post_id = updated_data.get("postId", "")
+        
+        print(f"🔍 로그 업데이트 시작: case_id={case_id}, post_id={post_id}")
         
         # 오늘 날짜의 모든 로그 파일 검색
         for log_file in date_dir.glob("*_input_logs.json"):
@@ -500,7 +505,13 @@ class InputAgent:
                 logs = _read_json(log_file)
                 if isinstance(logs, list):
                     for i, log in enumerate(logs):
-                        if log.get("case_id") == case_id:
+                        # case_id 또는 post_id로 매칭
+                        log_case_id = log.get("case_id", "")
+                        log_post_id = log.get("postId", "")
+                        
+                        if (log_case_id == case_id) or (post_id and log_post_id == post_id):
+                            print(f"✅ 로그 매칭 성공: case_id={log_case_id}, post_id={log_post_id}")
+                            
                             # 기존 로그 업데이트
                             logs[i] = {**log, **updated_data}
                             logs[i]["timestamp"] = _now_str()
@@ -511,14 +522,14 @@ class InputAgent:
                             logs[i]["status"] = "final"  # 최종 저장 표시
                             logs[i]["mode"] = mode
                             _write_json(log_file, logs)
-                            print(f"📝 로그 업데이트 → {log_file} (case_id: {case_id})")
+                            print(f"📝 로그 업데이트 → {log_file} (case_id: {case_id}, post_id: {post_id})")
                             return True
             except Exception as e:
                 print(f"⚠️ 로그 파일 읽기 실패: {log_file} - {e}")
                 continue
         
         # 기존 로그가 없으면 새로 생성
-        print(f"⚠️ 기존 로그를 찾을 수 없어 새로 생성: case_id={case_id}")
+        print(f"⚠️ 기존 로그를 찾을 수 없어 새로 생성: case_id={case_id}, post_id={post_id}")
         updated_data["status"] = "final"
         self.save_log(updated_data, mode)  # save_log에서 created_at, updated_at 모두 설정
         return False
@@ -566,28 +577,54 @@ class InputAgent:
         return data
 
     def _ensure_post_id_fields(self, data: dict) -> None:
-        """postId 관련 필드들을 단순화된 구조로 설정"""
+        """ID 필드를 3개(postId, medicontentRecordId, postDataRequestId)로만 정리"""
         
-        # 직접 postId 값 사용 (단순화)
-        post_id = data.get("postId", "")
+        # 1) 통일 ID: Next API(actualPostDataRequestPostIdFull) → 없으면 postId
+        unified_id = (
+            data.get("actualPostDataRequestPostIdFull")
+            or data.get("postId")
+            or ""
+        )
         
-        # 단순화된 필드 설정 - 모든 ID를 동일하게 처리
-        data.setdefault("postDataRequestId", post_id)  # 직접 record ID 사용
-        data.setdefault("medicontentPostId", post_id)  # 동일한 record ID 사용
-        data.setdefault("medicontentRecordId", post_id)  # 동일한 record ID 사용
+        # 2) 기본 값 설정
+        data["postId"] = unified_id
+        data["postDataRequestId"] = unified_id  # 테이블만 다르고 값은 동일하게 유지(요청사항)
         
-        # 로그에 저장할 정보 요약
-        post_info = {
-            "postDataRequestId": post_id,
-            "medicontentPostId": post_id,
-            "medicontentRecordId": post_id
-        }
+        # 3) medicontentRecordId 조회 시도 (Airtable)
+        medicontent_record_id = ""
+        if unified_id:
+            try:
+                from dotenv import load_dotenv
+                load_dotenv()
+                from pyairtable import Api
+                api_key = os.getenv('AIRTABLE_API_KEY')
+                base_id = os.getenv('AIRTABLE_BASE_ID')
+                if api_key and base_id:
+                    api = Api(api_key)
+                    posts_table = api.table(base_id, 'Medicontent Posts')
+                    recs = posts_table.all(formula=f"{{Post Id}} = '{unified_id}'")
+                    if recs:
+                        medicontent_record_id = recs[0]['id']
+            except Exception:
+                pass
+        data["medicontentRecordId"] = medicontent_record_id
         
-        print(f"📋 PostId 정보 저장 (단순화):")
-        print(f"   - Record ID (공통): {post_id}")
+        # 4) 불필요/중복 키 제거
+        for k in [
+            "_post_info",
+            "actualPostDataRequestPostId",
+            "actualPostDataRequestPostIdFull",
+            "Post Id",
+            "medicontentPostId",
+        ]:
+            if k in data:
+                data.pop(k, None)
         
-        # 명확한 구분을 위해 별도 필드 추가
-        data["_post_info"] = post_info
+        # 5) 디버그용 요약 출력(요청된 3개만)
+        print("📌 IDs:")
+        print(f"   postId               = {data.get('postId','')}")
+        print(f"   postDataRequestId    = {data.get('postDataRequestId','')}")
+        print(f"   medicontentRecordId  = {data.get('medicontentRecordId','')}")
 
     # ---------- 병원 유사도 ----------
     @staticmethod
@@ -992,25 +1029,28 @@ class InputAgent:
 
     # ---------- UI에서 받은 데이터 처리 (DB 조회 없음) ----------
     def _ensure_post_id_fields_from_ui(self, data: dict) -> None:
-        """UI에서 받은 Post ID 관련 필드들을 단순화된 구조로 설정"""
-        # UI에서 받은 postId를 직접 record ID로 사용 (단순화)
-        post_id = data.get("postDataRequestId") or data.get("postId", "")
+        """UI에서 받은 Post ID를 Post Id로 통일"""
+        # 원본 postId를 Post Id로 통일
+        post_id = data.get("postId", "")
         
-        # 단순화된 필드 설정 - 모든 ID를 동일하게 처리
+        # 모든 ID 필드를 Post Id로 통일
+        data["Post Id"] = post_id
+        data["postId"] = post_id
         data["postDataRequestId"] = post_id
-        data["medicontentPostId"] = post_id  
+        data["medicontentPostId"] = post_id
         data["medicontentRecordId"] = post_id
-        data["postId"] = post_id  # 기존 호환성을 위해 유지
         
         # 디버깅용 요약 정보 추가
         data["_post_info"] = {
+            "Post Id": post_id,
+            "postId": post_id,
             "postDataRequestId": post_id,
             "medicontentPostId": post_id,
             "medicontentRecordId": post_id
         }
         
-        print("📋 PostId 정보 저장 (UI에서 전달받음, 단순화):")
-        print(f"   - Record ID (공통): {post_id}")
+        print("📋 Post Id 정보 저장 (UI에서 전달받음, Post Id로 통일):")
+        print(f"   - Post Id (통일): {post_id}")
 
     # 기존 DB 조회 함수들은 제거됨 - UI에서 모든 데이터를 받아서 처리
 

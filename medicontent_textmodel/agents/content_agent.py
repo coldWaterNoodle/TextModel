@@ -463,42 +463,55 @@ def _reset_gif_session():
     _SESSION["used_emoticons"] = set()
     print(f"✅ GIF 세션 초기화 완료 - used_emoticons: {len(_SESSION['used_emoticons'])}개")
 
-def _process_url_without_bracket(match) -> str:
-    """괄호가 없는 URL을 <img> 태그로 변환"""
-    url = match.group(0)
-    # 텍스트에서 URL을 제거하고 <img> 태그로 대체
-    return f'<img src="{url}" alt="" style="width:auto; height:auto; max-width:100px;">'
 
-def _inject_emoticons_inline_no_img_tag(text: str, sec_key: str, use_airtable: bool = False, ui_mode: bool = False) -> Tuple[str, List[Dict[str, str]]]:
+
+# =========================
+# 이미지 태그 변환 통합 함수
+# =========================
+def _convert_urls_to_img_tags(text: str, sec_key: str, use_airtable: bool = False, ui_mode: bool = False) -> Tuple[str, List[Dict[str, str]]]:
     """
-    (행복/슬픔/신남/화남/일반/마무리/눈물) 마커와 Airtable URL을 URL로만 변환 (이미지 태그 생성 안함)
-    - URL만 추출하고 이미지 태그는 생성하지 않음
-    - 마커는 Airtable에서 URL 찾아서 변환
+    모든 URL을 <img> 태그로 변환하는 통합 함수
+    - 이모티콘 마커: (행복), (슬픔) 등 → Airtable에서 URL 찾아서 <img> 태그
+    - Airtable URL: 괄호 있음/없음 모두 → <img> 태그
+    - 기존 <img> 태그는 보호
+    - 중복 방지 적용
     """
     if not text:
         return text, []
 
     pool = _gif_pool_cached(use_airtable=use_airtable, ui_mode=ui_mode)
     images_log: List[Dict[str, str]] = []
+    processed_urls = set()
+
+    # 1. 기존 <img> 태그를 임시로 보호
+    img_placeholders = {}
+    placeholder_counter = 0
+    
+    def protect_existing_img_tag(match):
+        nonlocal placeholder_counter
+        img_tag = match.group(0)
+        placeholder = f"__EXISTING_IMG_{placeholder_counter}__"
+        img_placeholders[placeholder] = img_tag
+        placeholder_counter += 1
+        return placeholder
+    
+    text = re.sub(r'<img[^>]*src="[^"]*"[^>]*>', protect_existing_img_tag, text)
 
     def find_emoticon_url(emotion: str, animal: str = None) -> Optional[str]:
         """Airtable에서 emotion과 animal로 URL 찾기"""
         if not pool:
             return None
         
-        # 동물이 지정되지 않았으면 세션에서 가져오거나 랜덤 선택
         if not animal:
             animal = _SESSION.get("animal")
             if not animal:
                 animal = random.choice(list(pool.keys()))
                 _SESSION["animal"] = animal
         
-        # 해당 emotion과 animal의 URL 찾기
         media = _pick_gif_by(animal, emotion, pool)
         if media:
             return media["url"]
         
-        # 폴백: '일반' emotion으로 시도
         if emotion != "일반":
             media = _pick_gif_by(animal, "일반", pool)
             if media:
@@ -507,17 +520,16 @@ def _inject_emoticons_inline_no_img_tag(text: str, sec_key: str, use_airtable: b
         return None
 
     def process_emoticon_marker(match) -> str:
-        """이모티콘 마커를 <img> 태그로 변환 (중복 방지 적용)"""
+        """이모티콘 마커를 처리 - HTML 태그는 생성하지 않고 images_log에만 추가"""
         emotion = match.group(1)
         url = find_emoticon_url(emotion)
         
         if not url:
-            return ""  # URL을 찾지 못하면 제거
+            return ""
         
-        # 🔧 URL 기반 중복 방지 (감정 마커도 실제 URL로 체크)
         url_key = f"url_{hash(url) % 10000}"
         if url_key in _SESSION.get("used_emoticons", set()):
-            return ""  # 이미 쓴 이모티콘이면 텍스트에 넣지 않음
+            return ""
             
         _SESSION["used_emoticons"].add(url_key)
         images_log.append({
@@ -525,55 +537,72 @@ def _inject_emoticons_inline_no_img_tag(text: str, sec_key: str, use_airtable: b
             "url": url, 
             "path": url,
             "alt": f"{emotion} 이모티콘", 
-            "position": "emoticon"
+            "position": "emoticon",
+            "is_emoticon": True
         })
-        print(f"✅ 새로운 GIF 감정 추가 ({emotion}): {url[:50]}...")
 
-        # 텍스트에 바로 작은 이모티콘 <img>
-        return f'<img src="{url}" alt="" style="width:100px;height:100px;object-fit:contain;vertical-align:middle;">'
+        # HTML 태그는 생성하지 않고 마커만 제거
+        return ""
 
-    def process_url_with_bracket(match) -> str:
-        """괄호가 있는 URL을 <img> 태그로 변환 (중복 방지 적용)"""
-        url = match.group(1)  # 캡처 그룹 1 사용
+    def process_url(match) -> str:
+        """URL을 처리 - HTML 태그는 생성하지 않고 images_log에만 추가"""
+        url = match.group(1) if match.groups() else match.group(0)
         
-        # 🔧 URL 기반 중복 방지 (전역 세션 사용)
-        url_key = f"url_{hash(url) % 10000}"
-        if url_key in _SESSION.get("used_emoticons", set()):
-            return ""  # 이미 쓴 URL이면 텍스트에 넣지 않음
+        if url in processed_urls:
+            return ""
         
-        _SESSION["used_emoticons"].add(url_key)
+        processed_urls.add(url)
         images_log.append({
-            "filename": f"emoticon_url_{hash(url) % 10000}.gif", 
+            "filename": f"url_{hash(url) % 10000}.gif", 
             "url": url, 
             "path": url,
             "alt": "", 
-            "position": "emoticon"
+            "position": "emoticon",
+            "is_emoticon": True
         })
-        print(f"✅ 새로운 GIF URL 추가: {url[:50]}...")
         
-        # 텍스트에 바로 작은 이모티콘 <img>
-        return f'<img src="{url}" alt="" style="width:100px;height:100px;object-fit:contain;vertical-align:middle;">'
+        # HTML 태그는 생성하지 않고 마커만 제거
+        return ""
 
-    # 1. 이모티콘 마커 처리: (신남), (슬픔) 등
-    new_text = _EMOTICON_MARK_RE.sub(process_emoticon_marker, text)
+    # 2. 이모티콘 마커 처리: (신남), (슬픔) 등
+    text = _EMOTICON_MARK_RE.sub(process_emoticon_marker, text)
     
-    # 2. Airtable URL 처리: (https://...) - 괄호가 있는 URL
-    new_text = _AIRTABLE_URL_RE.sub(process_url_with_bracket, new_text)
+    # 3. 괄호가 있는 URL 처리: (https://...)
+    text = _AIRTABLE_URL_RE.sub(process_url, text)
     
-    # 3. Airtable URL 처리: https://... - 괄호가 없는 URL (이미 <img> 태그가 아닌 것만)
-    # 이미 <img> 태그로 변환된 URL은 건드리지 않음
-    def process_url_without_bracket_safe(match):
+    # 4. 괄호가 없는 URL 처리: https://...
+    def process_standalone_url(match):
         url = match.group(0)
-        # 현재 위치에서 앞쪽을 확인하여 img 태그 내부인지 체크
-        start_pos = match.start()
-        text_before = new_text[:start_pos]
-        # 가장 가까운 img 태그의 src 속성을 확인
-        img_match = re.search(r'<img[^>]*src="[^"]*"[^>]*>', text_before)
-        if img_match and img_match.end() > start_pos - 100:  # 100자 이내에 img 태그가 있으면 보호하지 않음
+        
+        if url in processed_urls:
             return url
-        return url  # 이미지 태그 대신 URL만 반환
+            
+        start_pos = match.start()
+        text_before = text[:start_pos]
+        img_match = re.search(r'<img[^>]*src="[^"]*"[^>]*>', text_before)
+        if img_match and img_match.end() > start_pos - 100:
+            return url
+            
+        processed_urls.add(url)
+        images_log.append({
+            "filename": f"url_{hash(url) % 10000}.gif", 
+            "url": url, 
+            "path": url,
+            "alt": "", 
+            "position": "emoticon",
+            "is_emoticon": True
+        })
+        
+        # HTML 태그는 생성하지 않고 마커만 제거
+        return ""
     
-    return new_text, images_log
+    text = re.sub(r'https://[^\s가-힣]*', process_standalone_url, text)
+    
+    # 5. 보호된 기존 <img> 태그를 다시 복원
+    for placeholder, img_tag in img_placeholders.items():
+        text = text.replace(placeholder, img_tag)
+    
+    return text, images_log
 
 # =========================
 # [NEW] 전역 dedup/경로정규화/해시/페어링 유틸
@@ -818,6 +847,15 @@ def _resolve_images_for_section(plan_sec: Dict[str, Any], input_row: Dict[str, A
             desc = it.get("description", "")
             if desc:  # 값이 있을 때만 추가
                 entry["alt"] = desc 
+            
+            # input 이미지와 content 이모티콘 gif 구분
+            if "airtableusercontent.com" in final_path and not desc:
+                # content 이모티콘 gif: 간단한 img 태그 (description이 없을 때만)
+                entry["is_emoticon"] = True
+            else:
+                # input 이미지: figure 태그로 감싸기
+                entry["is_emoticon"] = False
+            
             out.append(entry)
 
     return out
@@ -910,26 +948,21 @@ def _assemble_markdown(sections_out: Dict[str, Dict[str, Any]]) -> str:
         sec = sections_out.get(k)
         if not sec: continue
         
-        # 텍스트에서 이미 포함된 이미지 URL 확인
         text = sec.get("text", "").rstrip()
         included_urls = set()
         
         # 텍스트에 이미 포함된 URL 추출
-        import re
         url_pattern = re.compile(r'https://[^\s\)]*')
         included_urls.update(url_pattern.findall(text))
-        # <img> 태그에서 src URL도 추출
         img_pattern = re.compile(r'<img[^>]+src="([^"]+)"')
         included_urls.update(img_pattern.findall(text))
         
-        # 이미지 중복 방지를 위한 처리된 이미지 추적
         processed_images = set()
         
         # top 이미지 추가
         imgs_top = [im for im in sec.get("images", []) if im.get("position") == "top"]
         for im in imgs_top:
             img_path = im.get("path", "")
-            # 이미 텍스트에 포함된 URL이거나 이미 처리된 이미지면 추가하지 않음
             if img_path not in included_urls and img_path not in processed_images:
                 parts.append(f"![{im.get('alt','')}]({img_path})")
                 processed_images.add(img_path)
@@ -941,103 +974,40 @@ def _assemble_markdown(sections_out: Dict[str, Dict[str, Any]]) -> str:
         imgs_bottom = [im for im in sec.get("images", []) if im.get("position") == "bottom"]
         for im in imgs_bottom:
             img_path = im.get("path", "")
-            # 이미 텍스트에 포함된 URL이거나 이미 처리된 이미지면 추가하지 않음
             if img_path not in included_urls and img_path not in processed_images:
                 parts.append(f"![{im.get('alt','')}]({img_path})")
                 processed_images.add(img_path)
         
-        # emoticon 이미지 추가 (텍스트에 포함되지 않은 것만)
-        imgs_emoticon = [im for im in sec.get("images", []) if im.get("position") == "emoticon"]
-        for im in imgs_emoticon:
-            img_path = im.get("path", "")
-            # 이미 텍스트에 포함된 URL이거나 이미 처리된 이미지면 추가하지 않음
-            if img_path not in included_urls and img_path not in processed_images:
-                parts.append(f"![{im.get('alt','')}]({img_path})")
-                processed_images.add(img_path)
+
         
         parts.append("")  # 섹션 사이 공백줄
     return "\n".join(parts).strip()
 
-
-
-# ===== 복붙용 변환 =====
+# =========================
+# 통합 함수 사용
+# =========================
 _IMG_MD_RE = re.compile(r'!\[([^\]]*)\]\(([^)]+)\)')
 
 def _to_title_content_result(title: str, md: str) -> str:
     """
     - 첫 줄에 제목
-    - 공백 줄 1개
+    - 공백 줄 1개  
     - 본문에서 ![ALT](PATH)를 ALT만 남기기 (경로 제거, 꺽쇠 제거)
-    - GIF 파일도 완전 제거
-    - 이미 <img> 태그로 변환된 URL은 건드리지 않음
+    - 모든 이미지 경로는 제거하고 alt 텍스트만 유지
     """
     body = md or ""
     
-    # 1. 먼저 이미 <img> 태그로 변환된 URL을 보호
-    img_placeholders = {}
-    placeholder_counter = 0
-    
-    def protect_img_tag(match):
-        nonlocal placeholder_counter
-        img_tag = match.group(0)
-        placeholder = f"__IMG_PLACEHOLDER_{placeholder_counter}__"
-        img_placeholders[placeholder] = img_tag
-        placeholder_counter += 1
-        return placeholder
-    
-    # <img> 태그를 임시로 보호
-    body = re.sub(r'<img[^>]*src="[^"]*"[^>]*>', protect_img_tag, body)
-    
-    # 2. Markdown 이미지 ![ALT](PATH) 처리
+    # Markdown 이미지 ![ALT](PATH) 처리 - alt 텍스트만 남기기
     def _img_repl(m: re.Match):
         alt = (m.group(1) or "").strip()
-        path = (m.group(2) or "").strip()
-        pnorm = path.lower().replace("\\", "/")  # 경로 정규화
-        
-        # 로컬 GIF 파일만 제거 (Airtable URL은 유지)
-        if (pnorm.endswith(".gif") and 
-            "/test_data/test_image/gif/" in pnorm):
-            return ""  # 로컬 GIF만 완전 제거
-        
-        # Airtable URL은 <img> 태그로 변환
-        if "airtableusercontent.com" in pnorm:
-            return f'<img src="{path}" alt="" style="width:auto; height:auto; max-width:100px;">'
-        
-        # 일반 이미지: alt만 꺽쇠 없이 반환
         if alt:
             return f"\n{alt}\n"
         else:
-            return ""  # alt도 없으면 완전 제거
+            return ""
 
     body = _IMG_MD_RE.sub(_img_repl, body)
     
-    # 3. 괄호 안의 Airtable URL 처리 (이미 변환되지 않은 것만)
-    airtable_pattern = re.compile(r'[（\(]\s*(https://[^）\)]*airtableusercontent\.com[^）\)]*)\s*[）\)]', re.IGNORECASE)
-    body = airtable_pattern.sub(lambda m: f'<img src="{m.group(1)}" alt="" style="width:auto; height:auto; max-width:100px;">', body)
-    
-    # 4. 괄호 안의 GIF 파일 처리 (이미 변환되지 않은 것만)
-    gif_pattern = re.compile(r'[（\(]\s*([^）\)]*\.gif[^）\)]*)\s*[）\)]', re.IGNORECASE)
-    body = gif_pattern.sub(lambda m: f'<img src="{m.group(1)}" alt="" style="width:auto; height:auto; max-width:100px;">', body)
-    
-    # 5. 괄호가 없는 Airtable URL 처리 (이미 <img> 태그가 아닌 것만)
-    def protect_airtable_url_if_not_in_img(match):
-        url = match.group(0)
-        # 현재 위치에서 앞쪽을 확인하여 img 태그 내부인지 체크
-        start_pos = match.start()
-        text_before = body[:start_pos]
-        # 가장 가까운 img 태그의 src 속성을 확인
-        img_match = re.search(r'<img[^>]*src="[^"]*"[^>]*>', text_before)
-        if img_match and img_match.end() > start_pos - 100:  # 100자 이내에 img 태그가 있으면 보호하지 않음
-            return url
-        return f'<img src="{url}" alt="" style="width:auto; height:auto; max-width:100px;">'
-    
-    body = re.sub(r'https://[^\s\)]*airtableusercontent\.com[^\s\)]*', protect_airtable_url_if_not_in_img, body)
-    
-    # 6. 보호된 <img> 태그를 다시 복원
-    for placeholder, img_tag in img_placeholders.items():
-        body = body.replace(placeholder, img_tag)
-    
-    # 7. 연속된 줄바꿈 정리
+    # 연속된 줄바꿈 정리
     body = re.sub(r"\n{3,}", "\n\n", body).strip()
 
     title_line = (title or "").strip()
@@ -1045,151 +1015,6 @@ def _to_title_content_result(title: str, md: str) -> str:
         return f"{title_line}\n\n{body}".strip()
     return body
 
-
-def _to_title_content_result_with_img_tags(title: str, md: str) -> str:
-    """
-    - 첫 줄에 제목
-    - 공백 줄 1개
-    - 본문에서 모든 URL을 <img> 태그로 변환 (gif 이모티콘 URL 포함)
-    - 중복 처리 방지 및 섹션별 적절한 이미지 배치
-    """
-    body = md or ""
-    print(f"🔍 _to_title_content_result_with_img_tags 시작 - 입력 본문 길이: {len(body)}")
-    if "https://" in body:
-        print(f"🔍 입력 본문에 URL 포함됨")
-        # 실제 URL들을 찾아서 로그 출력
-        urls = re.findall(r'https://[^\s]*', body)
-        for i, url in enumerate(urls[:3]):  # 처음 3개만 출력
-            print(f"🔍 발견된 URL #{i+1}: {url}")
-    if ".gif" in body:
-        print(f"🔍 입력 본문에 GIF 포함됨")
-        # 실제 GIF URL들을 찾아서 로그 출력  
-        gif_urls = re.findall(r'https://[^\s]*\.gif[^\s]*', body)
-        for i, url in enumerate(gif_urls[:3]):  # 처음 3개만 출력
-            print(f"🔍 발견된 GIF URL #{i+1}: {url}")
-    
-    # 1. 이미 존재하는 <img> 태그를 임시로 보호
-    img_placeholders = {}
-    placeholder_counter = 0
-    
-    def protect_existing_img_tag(match):
-        nonlocal placeholder_counter
-        img_tag = match.group(0)
-        placeholder = f"__EXISTING_IMG_{placeholder_counter}__"
-        img_placeholders[placeholder] = img_tag
-        placeholder_counter += 1
-        return placeholder
-    
-    # 기존 <img> 태그를 임시로 보호
-    body = re.sub(r'<img[^>]*src="[^"]*"[^>]*>', protect_existing_img_tag, body)
-    
-    # 2. Markdown 이미지 ![ALT](PATH) 처리
-    def _img_repl(m: re.Match):
-        alt = (m.group(1) or "").strip()
-        path = (m.group(2) or "").strip()
-        pnorm = path.lower().replace("\\", "/")  # 경로 정규화
-        
-        print(f"🔍 Markdown 이미지 처리: ![{alt}]({path})")
-        
-        # 로컬 GIF 파일만 제거 (Airtable URL은 유지)
-        if (pnorm.endswith(".gif") and 
-            "/test_data/test_image/gif/" in pnorm):
-            print(f"❌ 로컬 GIF 제거: {path}")
-            return ""  # 로컬 GIF만 완전 제거
-        
-        # 모든 URL을 <img> 태그로 변환
-        if "airtableusercontent.com" in pnorm or "drive.google.com" in pnorm or pnorm.endswith(".gif"):
-            print(f"✅ Markdown URL → img 태그: {path}")
-            return f'<img src="{path}" alt="{alt}" style="width:auto; height:auto; max-width:100px;">'
-        
-        # 일반 이미지: alt만 꺽쇠 없이 반환
-        if alt:
-            print(f"💬 일반 이미지 → alt 텍스트: {alt}")
-            return f"\n{alt}\n"
-        else:
-            print(f"❌ alt 없는 이미지 제거: {path}")
-            return ""  # alt도 없으면 완전 제거
-
-    print(f"🔍 Markdown 이미지 정규식 매칭 시작...")
-    body = _IMG_MD_RE.sub(_img_repl, body)
-    print(f"🔍 Markdown 이미지 정규식 매칭 완료")
-    
-    # 3. 괄호 안의 모든 URL 처리
-    url_pattern = re.compile(r'[（\(]\s*(https://[^）\)]*)\s*[）\)]', re.IGNORECASE)
-    
-    def process_bracket_url(match):
-        url = match.group(1)
-        print(f"✅ 괄호 안 URL → img 태그: {url}")
-        return f'<img src="{url}" alt="" style="width:auto; height:auto; max-width:100px;">'
-    
-    print(f"🔍 괄호 안 URL 정규식 매칭 시작...")
-    body = url_pattern.sub(process_bracket_url, body)
-    print(f"🔍 괄호 안 URL 정규식 매칭 완료")
-    
-    # 4. 괄호가 없는 모든 URL 처리 (중복 방지 및 섹션별 처리)
-    processed_urls = set()
-    def process_standalone_url(match):
-        url = match.group(0)
-        print(f"🔍 URL 처리 중: {url}")
-        
-        # 이미 처리된 URL인지 확인
-        if url in processed_urls:
-            print(f"⚠️ 이미 처리된 URL 스킵: {url}")
-            return url
-            
-        # URL을 처리하고 기록
-        processed_urls.add(url)
-        
-        # 섹션별로 다른 스타일 적용
-        if "airtableusercontent.com" in url or "drive.google.com" in url:
-            print(f"✅ Airtable/GDrive URL → img 태그: {url}")
-            return f'<img src="{url}" alt="" style="width:auto; height:auto; max-width:100px;">'
-        elif url.endswith('.gif'):
-            print(f"✅ GIF URL → img 태그: {url}")
-            return f'<img src="{url}" alt="" style="width:auto; height:auto; max-width:100px;">'
-        else:
-            # 일반 이미지 URL
-            print(f"✅ 일반 이미지 URL → img 태그: {url}")
-            return f'<img src="{url}" alt="" style="width:100%; max-width:500px; height:auto;">'
-    
-    # 괄호가 없는 URL을 <img> 태그로 변환 (섹션별로 적절히 배치)
-    # ✅ 강화된 정규식: 더 많은 URL 형태를 매칭하도록 수정
-    print(f"🔍 URL 정규식 매칭 시작...")
-    
-    # 테스트: 실제 매칭되는 URL 확인
-    test_urls = re.findall(r'https://[^\s가-힣\).,!?\n]*', body)
-    print(f"🔍 기존 정규식으로 매칭된 URL: {len(test_urls)}개")
-    for i, url in enumerate(test_urls[:3]):
-        print(f"   {i+1}. {url}")
-    
-    # 더 강력한 정규식 사용: 공백과 한글만 제외하고 모든 문자 허용
-    stronger_urls = re.findall(r'https://[^\s가-힣]*', body)
-    print(f"🔍 강화된 정규식으로 매칭된 URL: {len(stronger_urls)}개")
-    for i, url in enumerate(stronger_urls[:3]):
-        print(f"   {i+1}. {url}")
-    
-    # 강화된 정규식으로 변환 실행
-    body = re.sub(r'https://[^\s가-힣]*', process_standalone_url, body)
-    print(f"🔍 URL 정규식 매칭 완료")
-    
-    # 5. 보호된 기존 <img> 태그를 다시 복원
-    for placeholder, img_tag in img_placeholders.items():
-        body = body.replace(placeholder, img_tag)
-    
-    # 6. 연속된 줄바꿈 정리
-    body = re.sub(r"\n{3,}", "\n\n", body).strip()
-    
-    print(f"🔍 _to_title_content_result_with_img_tags 완료 - 최종 본문 길이: {len(body)}")
-    if "<img" in body:
-        img_count = body.count("<img")
-        print(f"✅ 최종 결과에 img 태그 {img_count}개 포함됨")
-    else:
-        print(f"❌ 최종 결과에 img 태그 없음")
-
-    title_line = (title or "").strip()
-    if title_line:
-        return f"{title_line}\n\n{body}".strip()
-    return body
 # =========================
 # 저장
 # =========================
@@ -1257,8 +1082,8 @@ def run(mode: str = DEF_MODE,
         prompt = _build_section_prompt(k, sec_plan, base_ctx)
         raw = gem.generate(prompt)
         text = _clean_output(raw)
-        # ✅ 첫 번째: 이모티콘 마커 치환 (URL만 받고 이미지 태그 생성 안함)
-        text, emoticon_imgs = _inject_emoticons_inline_no_img_tag(text, k, use_airtable, ui_mode)
+        # ✅ 통합 함수로 URL을 <img> 태그로 변환
+        text, emoticon_imgs = _convert_urls_to_img_tags(text, k, use_airtable, ui_mode)
         # ✅ 가독성 개선을 나중에 적용 (이미지 태그 보호)
         text = _improve_readability(text)
 
@@ -1289,7 +1114,7 @@ def run(mode: str = DEF_MODE,
     md = _assemble_markdown(sections_out)
     
     # ✅ 두 번째: gif 이모티콘 URL을 받은 후에만 이미지 태그 생성
-    title_content_result = _to_title_content_result_with_img_tags(base_ctx.get("title", ""), md)
+    title_content_result = _to_title_content_result(base_ctx.get("title", ""), md)
 
     # 5) 저장 (assembled_markdown에 복붙용 문자열을 저장하고, title_content_result 필드는 제거)
     result = {
@@ -1303,6 +1128,8 @@ def run(mode: str = DEF_MODE,
             "input_source": inp_src,
             "title_source": title_src,
             "case_id": _get(inp_row, "case_id", ""),
+            "post_id": _get(inp_row, "postId", ""),  # ✅ Post Id 추가
+            "post_data_request_id": _get(inp_row, "postDataRequestId", ""),  # ✅ Post Data Request ID 추가
         },
         "title": base_ctx.get("title", ""),
         "sections": sections_out,
@@ -1312,6 +1139,50 @@ def run(mode: str = DEF_MODE,
     # HTML 버전 저장 (Airtable URL 사용)
     html_path = convert_content_to_html(out_path)
     print(f"🌐 HTML 저장: {html_path}")
+
+    # UI에서 접근할 수 있도록 HTML 파일을 public 디렉토리로 복사
+    try:
+        import shutil
+        # UI 프로젝트의 public 디렉토리 경로
+        ui_public_dir = Path("upgrade_0820/public/medicontent/posts")
+        ui_public_dir.mkdir(parents=True, exist_ok=True)
+        
+        # HTML ID 생성 (timestamp 기반)
+        html_id = out_path.stem.replace("_content", "")  # 예: 20250812_141055
+        ui_html_path = ui_public_dir / f"post-{html_id}.html"
+        
+        # HTML 파일 복사
+        shutil.copy2(html_path, ui_html_path)
+        print(f"🌐 UI용 HTML 복사: {ui_html_path}")
+        
+        # Airtable에 HTML ID 업데이트
+        try:
+            from dotenv import load_dotenv
+            load_dotenv()
+            
+            from pyairtable import Api
+            api = Api(os.getenv('AIRTABLE_API_KEY'))
+            posts_table = api.table(os.getenv('AIRTABLE_BASE_ID'), 'Medicontent Posts')
+            
+            # Post Id로 레코드 찾기
+            post_id = _get(inp_row, "postId", "") or _get(inp_row, "Post Id", "")
+            if post_id:
+                records = posts_table.all(formula=f"{{Post Id}} = '{post_id}'")
+                if records:
+                    record_id = records[0]['id']
+                    # HTML ID는 content JSON 파일명(stem)으로 설정
+                    posts_table.update(record_id, {'HTML ID': out_path.stem})
+                    print(f"✅ Airtable HTML ID 업데이트 완료 (Post Id 매칭): {out_path.stem}")
+                else:
+                    print(f"⚠️ Post Id로 레코드를 찾을 수 없음: {post_id}")
+            else:
+                print(f"⚠️ Post Id가 없어 HTML ID 업데이트를 건너뜀")
+                
+        except Exception as e:
+            print(f"⚠️ Airtable HTML ID 업데이트 실패: {e}")
+        
+    except Exception as e:
+        print(f"⚠️ UI용 HTML 복사 실패: {e}")
 
     # 동일 내용 TXT 저장
     out_dir = out_path.parent
@@ -1338,6 +1209,7 @@ def run(mode: str = DEF_MODE,
     print(f"✅ Content 저장: {out_path}")
     print(f"🧾 로그 저장: {log_path}")
     print(f"📝 복붙용 TXT 저장: {txt_path}")
+
     return result
 
 

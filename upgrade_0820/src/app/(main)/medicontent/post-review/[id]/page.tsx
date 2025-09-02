@@ -13,11 +13,36 @@ const ScorePanel = ({ post, review, onTooltip }: { post: any; review: any; onToo
     const [tab, setTab] = useState<'SEO' | '의료법'>('SEO');
     
     // 검토 데이터에서 체크리스트 파싱
-    const seoChecklist = review?.seoChecklist ? JSON.parse(review.seoChecklist) : [];
-    const legalChecklist = review?.legalChecklist ? JSON.parse(review.legalChecklist) : [];
+    let seoChecklist = [];
+    let legalChecklist = [];
+    
+    try {
+        if (review?.seoChecklist) {
+            seoChecklist = JSON.parse(review.seoChecklist);
+        }
+    } catch (error) {
+        console.error('SEO 체크리스트 파싱 실패:', error);
+        seoChecklist = [];
+    }
+    
+    try {
+        if (review?.legalChecklist) {
+            legalChecklist = JSON.parse(review.legalChecklist);
+        }
+    } catch (error) {
+        console.error('Legal 체크리스트 파싱 실패:', error);
+        legalChecklist = [];
+    }
     
     const checklist = tab === 'SEO' ? seoChecklist : legalChecklist;
     const score = tab === 'SEO' ? (review?.seoScore || post.seoScore || 0) : (review?.legalScore || post.legalScore || 0);
+    
+    // 디버깅용 로그
+    console.log('Review 데이터:', review);
+    console.log('SEO 체크리스트:', seoChecklist);
+    console.log('Legal 체크리스트:', legalChecklist);
+    console.log('현재 탭:', tab);
+    console.log('선택된 체크리스트:', checklist);
     
     return (
         <div>

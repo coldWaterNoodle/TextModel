@@ -435,34 +435,6 @@ def run(plan: Optional[Dict[str, Any]] = None, plan_path: Optional[str | Path] =
         "selected": sel_obj.get("selected", {"title": "", "why_best": ""}),
     }
 
-    # 저장 메타
-    meta = {
-        "mode": mode,
-        "timestamp": _now(),
-        "plan_source": plan_obj.get("meta", {}).get("source_log", ""),
-        "plan_snapshot": plan_obj,  # 추후 디버깅용
-    }
-
-    out, log = save_outputs(mode, final, meta)
-    print(f"✅ Title 저장: {out}")
-    print(f"🧾 로그 저장: {log}")
-    return final
-
-def run(plan: Optional[Dict[str, Any]] = None, plan_path: Optional[str | Path] = None, mode: str = DEF_MODE, N: int = 5) -> Dict[str, Any]:
-    plan_obj = load_plan(plan=plan, plan_path=plan_path, mode=mode)
-
-    # 후보 생성
-    cand_obj = generate_candidates(plan_obj, N=N)
-
-    # 모델 선택
-    sel_obj = select_best(plan_obj, cand_obj)
-
-    # 최종 결과 스키마 조립
-    final = {
-        "candidates": cand_obj.get("candidates", []),
-        "selected": sel_obj.get("selected", {"title": "", "why_best": ""}),
-    }
-
     # 사용 데이터 로그용 추출
     used_data = {
         "category": _get(plan_obj, "context_vars.category", ""),
@@ -484,11 +456,13 @@ def run(plan: Optional[Dict[str, Any]] = None, plan_path: Optional[str | Path] =
         "plan_source": plan_obj.get("meta", {}).get("source_log", ""),
         "plan_snapshot": plan_obj,  # 추후 디버깅용
         "used_data": used_data,     # 제목 생성 시 참고한 주요 데이터
+        "post_id": plan_obj.get("meta", {}).get("post_id", ""),  # ✅ Post Id 추가
+        "post_data_request_id": plan_obj.get("meta", {}).get("post_data_request_id", ""),  # ✅ Post Data Request ID 추가
     }
 
     out, log = save_outputs(mode, final, meta)
     print(f"✅ Title 저장: {out}")
-    print(f"🧾 로그 저장: {log}")
+    print(f"�� 로그 저장: {log}")
     print(f"📌 사용 데이터: {json.dumps(used_data, ensure_ascii=False, indent=2)}")
     return final
 

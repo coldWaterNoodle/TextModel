@@ -556,6 +556,8 @@ def _repair_plan(obj: dict, input_row: dict, mode: str) -> dict:
     obj["meta"].setdefault("timestamp", _now())
     obj["meta"].setdefault("case_id", _safe_get(input_row, "case_id", ""))
     obj["meta"].setdefault("source_log", input_row.get("source_log", ""))
+    obj["meta"].setdefault("post_id", _safe_get(input_row, "postId", ""))  # ✅ Post Id 추가
+    obj["meta"].setdefault("post_data_request_id", _safe_get(input_row, "postDataRequestId", ""))  # ✅ Post Data Request ID 추가
 
     return obj
 

@@ -42,6 +42,8 @@ from typing import Any, Dict, List, Tuple, Union, Iterable
 import google.generativeai as genai
 from dotenv import load_dotenv
 
+import unicodedata
+from kiwipiepy import Kiwi
 
 
 # ===== 경로 기본 =====
@@ -69,14 +71,14 @@ def extract_title_and_content_from_html(html_file_path: str) -> tuple[str, str]:
             elif soup.find('title'):
                 title = soup.find('title').get_text(strip=True)
             
-            # 본문 추출 (HTML 코드 그대로)
+            # 본문 추출 (HTML 코드 그대로 - DOCTYPE부터 끝까지)
             content = html_content
-            
-            # HTML 코드는 그대로 유지
             
             print(f"📝 HTML에서 추출:")
             print(f"   제목: {title[:50]}..." if len(title) > 50 else f"   제목: {title}")
-            print(f"   본문 HTML 크기: {len(content)}자 (HTML 코드 포함)")
+            print(f"   본문 HTML 크기: {len(content)}자 (전체 HTML 코드 포함)")
+            print(f"   HTML 시작: {content[:100]}...")
+            print(f"   HTML 끝: ...{content[-100:]}")
             
             return title, content
             
@@ -86,13 +88,8 @@ def extract_title_and_content_from_html(html_file_path: str) -> tuple[str, str]:
             title_match = re.search(r'<h1[^>]*>(.*?)</h1>', html_content, re.IGNORECASE | re.DOTALL)
             title = title_match.group(1).strip() if title_match else ""
             
-            # Content는 HTML 코드 그대로 (body 태그 내용 또는 전체)
-            body_match = re.search(r'<body[^>]*>(.*?)</body>', html_content, re.IGNORECASE | re.DOTALL)
-            if body_match:
-                content = f"<body>{body_match.group(1)}</body>"
-            else:
-                # body가 없으면 전체 HTML
-                content = html_content
+            # Content는 전체 HTML 코드 그대로 (DOCTYPE부터 끝까지)
+            content = html_content
             
             return title, content
             
@@ -140,24 +137,16 @@ def generate_ui_checklist_logs(evaluation_data: Dict[str, Any], base_log_path: s
             }
         checklist.append(checklist_item)
     
-    # 파일명 생성 (before/after/declined 패턴 지원)
+    # 파일명 생성 (after 또는 기본 evaluation 패턴)
     if is_seo:
-        if '_evaluation_before.json' in base_log_path:
-            ui_log_path = base_log_path.replace('_evaluation_before.json', '_seo_ui_checklist_before.json')
-        elif '_evaluation_after.json' in base_log_path:
+        if '_evaluation_after.json' in base_log_path:
             ui_log_path = base_log_path.replace('_evaluation_after.json', '_seo_ui_checklist_after.json')
-        elif '_evaluation_declined.json' in base_log_path:
-            ui_log_path = base_log_path.replace('_evaluation_declined.json', '_seo_ui_checklist_declined.json')
         else:
             ui_log_path = base_log_path.replace('_evaluation.json', '_seo_ui_checklist.json')
         log_type = "SEO"
     elif is_legal:
-        if '_evaluation_before.json' in base_log_path:
-            ui_log_path = base_log_path.replace('_evaluation_before.json', '_legal_ui_checklist_before.json')
-        elif '_evaluation_after.json' in base_log_path:
+        if '_evaluation_after.json' in base_log_path:
             ui_log_path = base_log_path.replace('_evaluation_after.json', '_legal_ui_checklist_after.json')
-        elif '_evaluation_declined.json' in base_log_path:
-            ui_log_path = base_log_path.replace('_evaluation_declined.json', '_legal_ui_checklist_declined.json')
         else:
             ui_log_path = base_log_path.replace('_evaluation.json', '_legal_ui_checklist.json')
         log_type = "의료법"
@@ -266,40 +255,66 @@ def auto_update_medicontent_posts(evaluation_data: Dict[str, Any], evaluation_fi
                 with open(cf, 'r', encoding='utf-8') as f:
                     content_data = json.load(f)
                 
-                # content.json에서 input_source 추출
-                input_source = content_data.get("meta", {}).get("input_source", "")
-                if not input_source:
-                    continue
-                
-                # input_source 경로를 절대 경로로 변환
-                if not Path(input_source).is_absolute():
-                    input_file = ROOT / input_source
-                else:
-                    input_file = Path(input_source)
-                
-                if not input_file.exists():
-                    continue
-                
-                # input_source에서 PostID 추출
-                with open(input_file, 'r', encoding='utf-8') as f:
-                    input_logs = json.load(f)
-                
-                # PostID 추출 로직
+                # ✅ content.json의 meta 섹션에서 Post Id 직접 추출 (우선순위 1)
                 post_id = None
-                if isinstance(input_logs, list) and input_logs:
-                    for log_entry in input_logs:
-                        if isinstance(log_entry, dict):
-                            for key in ['actualPostDataRequestPostIdFull', 'medicontentPostId', 'postId']:
-                                if key in log_entry and log_entry[key]:
-                                    post_id = str(log_entry[key])
+                if 'meta' in content_data:
+                    meta = content_data['meta']
+                    if 'post_id' in meta and meta['post_id']:
+                        post_id = str(meta['post_id'])
+                        print(f"🔍 PostID 추출 (meta): post_id = {post_id}")
+                    elif 'post_data_request_id' in meta and meta['post_data_request_id']:
+                        post_id = str(meta['post_data_request_id'])
+                        print(f"🔍 PostID 추출 (meta): post_data_request_id = {post_id}")
+                
+                # Post Id를 찾지 못한 경우에만 input_source에서 찾기 (우선순위 2)
+                if not post_id:
+                    input_source = content_data.get("meta", {}).get("input_source", "")
+                    if not input_source:
+                        continue
+                    
+                    # input_source 경로를 절대 경로로 변환
+                    if not Path(input_source).is_absolute():
+                        input_file = ROOT / input_source
+                    else:
+                        input_file = Path(input_source)
+                    
+                    if not input_file.exists():
+                        continue
+                    
+                    # input_source에서 PostID 추출
+                    with open(input_file, 'r', encoding='utf-8') as f:
+                        input_logs = json.load(f)
+                    
+                    # PostID 추출 로직 (Post Id로 통일)
+                    if isinstance(input_logs, list) and input_logs:
+                        # 가장 최신 로그부터 확인 (업데이트된 로그가 마지막에 있을 가능성)
+                        for log_entry in reversed(input_logs):
+                            if isinstance(log_entry, dict):
+                                # Post Id 필드 우선 확인
+                                if 'Post Id' in log_entry and log_entry['Post Id']:
+                                    post_id = str(log_entry['Post Id'])
+                                    print(f"🔍 PostID 추출 (list, 최신순): Post Id = {post_id}")
                                     break
-                            if post_id:
-                                break
-                elif isinstance(input_logs, dict):
-                    for key in ['actualPostDataRequestPostIdFull', 'medicontentPostId', 'postId']:
-                        if key in input_logs and input_logs[key]:
-                            post_id = str(input_logs[key])
-                            break
+                                # 백업: 다른 필드들 확인
+                                for field in ['postId', 'postDataRequestId', 'medicontentPostId']:
+                                    if field in log_entry and log_entry[field]:
+                                        post_id = str(log_entry[field])
+                                        print(f"🔍 PostID 추출 (list, 최신순): {field} = {post_id}")
+                                        break
+                                if post_id:
+                                    break
+                    elif isinstance(input_logs, dict):
+                        # Post Id 필드 우선 확인
+                        if 'Post Id' in input_logs and input_logs['Post Id']:
+                            post_id = str(input_logs['Post Id'])
+                            print(f"🔍 PostID 추출 (dict): Post Id = {post_id}")
+                        else:
+                            # 백업: 다른 필드들 확인
+                            for field in ['postId', 'postDataRequestId', 'medicontentPostId']:
+                                if field in input_logs and input_logs[field]:
+                                    post_id = str(input_logs[field])
+                                    print(f"🔍 PostID 추출 (dict): {field} = {post_id}")
+                                    break
                 
                 if post_id:
                     content_file = cf
@@ -357,8 +372,17 @@ def auto_update_medicontent_posts(evaluation_data: Dict[str, Any], evaluation_fi
             
             matched_record = None
             
-            # PostID 필드로 필터링하여 레코드 검색
-            records = posts_table.all(formula=f"{{Post Id}} = '{post_id}'")
+            # Post Id 필드로 검색
+            records = []
+            try:
+                records = posts_table.all(formula=f"{{Post Id}} = '{post_id}'")
+                if records:
+                    print(f"✅ PostID 매칭 성공!")
+                else:
+                    print(f"⚠️ Post Id '{post_id}'에 해당하는 레코드를 찾을 수 없습니다.")
+            except Exception as e:
+                print(f"❌ Post Id 검색 실패: {e}")
+                records = []
             
             if records:
                 matched_record = records[0]
@@ -451,38 +475,69 @@ def auto_update_medicontent_posts(evaluation_data: Dict[str, Any], evaluation_fi
             
             # Post Reviews 테이블도 업데이트
             try:
-                # 기존 Post Review 레코드 검색
-                existing_reviews = reviews_table.all(formula=f"{{Post ID}} = '{post_id}'")
+                print(f"🔍 Post Reviews 테이블 업데이트 시작...")
+                print(f"🔍 사용할 Post ID: '{post_id}'")
+                print(f"🔍 평가 기준: {criteria} (SEO: {is_seo_score}, Legal: {is_legal_score})")
+                
+                # 기존 Post Review 레코드 검색 (Post Id로 통일)
+                existing_reviews = []
+                
+                # 먼저 Post Reviews 테이블에 접근 가능한지 확인
+                try:
+                    all_reviews = reviews_table.all()
+                    print(f"✅ Post Reviews 테이블 접근 성공. 총 레코드 수: {len(all_reviews)}")
+                except Exception as table_error:
+                    print(f"❌ Post Reviews 테이블 접근 실패: {table_error}")
+                    raise table_error
+                
+                # Post ID 필드로 검색 (Post Reviews는 'Post ID' 사용)
+                try:
+                    existing_reviews = reviews_table.all(formula=f"{{Post ID}} = '{post_id}'")
+                    if existing_reviews:
+                        print(f"✅ Post Reviews에서 Post ID '{post_id}' 검색 성공")
+                    else:
+                        print(f"⚠️ Post ID '{post_id}'에 해당하는 Post Review 레코드가 없습니다.")
+                except Exception as e:
+                    print(f"❌ Post Reviews 검색 실패: {e}")
+                    existing_reviews = []
+                
+                print(f"🔍 Post Reviews에서 PostID '{post_id}' 검색 결과: {len(existing_reviews)}개 레코드")
                 
                 # UI checklist JSON 생성
                 checklist_json = ""
                 ui_log_path = ""
                 
-                # 해당 타임스탬프의 UI checklist 로그 찾기 (기존/새로운 구조 모두 지원)
-                eval_dir = Path(evaluation_file_path).parent
-                ui_patterns = []
+                # evaluation 파일에서 타임스탬프 추출하여 체크리스트 찾기
+                eval_file = Path(evaluation_file_path)
+                eval_stem = eval_file.stem
                 
-                if is_seo_score:
-                    # SEO 체크리스트 패턴들
-                    ui_patterns = [
-                        f"{timestamp}_seo_ui_checklist_after.json",
-                        f"{timestamp}_seo_ui_checklist_before.json", 
-                        f"{timestamp}_seo_ui_checklist_declined.json",
-                        f"{timestamp}_seo_ui_checklist.json"
-                    ]
+                # evaluation 파일명에서 타임스탬프 추출 (YYYYMMDD_HHMMSS)
+                eval_timestamp_match = re.search(r'(\d{8}_\d{6})', eval_stem)
+                if eval_timestamp_match:
+                    eval_timestamp = eval_timestamp_match.group(1)
+                    print(f"🔍 evaluation 파일에서 체크리스트용 타임스탬프 추출: {eval_timestamp}")
+                    
+                    ui_patterns = []
+                    if is_seo_score:
+                        # SEO 체크리스트 패턴들 (최초 + 재생성)
+                        ui_patterns = [
+                            f"{eval_timestamp}_seo_ui_checklist.json",
+                            f"{eval_timestamp}_seo_ui_checklist_after.json"
+                        ]
+                    else:
+                        # Legal 체크리스트 패턴들 (최초 + 재생성)
+                        ui_patterns = [
+                            f"{eval_timestamp}_legal_ui_checklist.json",
+                            f"{eval_timestamp}_legal_ui_checklist_after.json"
+                        ]
                 else:
-                    # Legal 체크리스트 패턴들  
-                    ui_patterns = [
-                        f"{timestamp}_legal_ui_checklist_after.json",
-                        f"{timestamp}_legal_ui_checklist_before.json",
-                        f"{timestamp}_legal_ui_checklist_declined.json", 
-                        f"{timestamp}_legal_ui_checklist.json"
-                    ]
+                    print(f"⚠️ evaluation 파일에서 타임스탬프를 찾을 수 없습니다: {eval_stem}")
+                    ui_patterns = []
                 
                 # UI checklist 파일을 찾을 검색 디렉토리들
                 ui_search_dirs = [
-                    eval_dir,  # 현재 폴더
-                    eval_dir.parent,  # 상위 폴더
+                    eval_file.parent,  # evaluation 파일이 있는 폴더
+                    eval_file.parent.parent,  # 상위 폴더
                     base_use_dir,  # test_logs/use/
                     base_use_dir / "results",  # results/ 폴더
                 ]
@@ -515,9 +570,12 @@ def auto_update_medicontent_posts(evaluation_data: Dict[str, Any], evaluation_fi
                     # UI checklist JSON 읽기
                     with open(ui_file, 'r', encoding='utf-8') as f:
                         checklist_json = f.read()
+                    print(f"📄 체크리스트 JSON 읽기 완료: {len(checklist_json)}자")
+                    print(f"📄 체크리스트 JSON 미리보기: {checklist_json[:200]}...")
                 else:
                     print(f"⚠️ UI checklist 파일을 찾을 수 없습니다: {ui_patterns}")
                     print("   체크리스트 파일이 없어도 점수는 업데이트합니다.")
+                    checklist_json = ""
                 
                 # Post Reviews 업데이트 데이터 준비
                 review_update_data = {
@@ -525,30 +583,57 @@ def auto_update_medicontent_posts(evaluation_data: Dict[str, Any], evaluation_fi
                     'Reviewed At': datetime.now().isoformat()
                 }
                 
+                # SEO 점수와 체크리스트 처리
                 if is_seo_score:
                     review_update_data['SEO Score'] = weighted_total
                     if checklist_json:
+                        # 체크리스트 JSON 크기 제한 (Airtable 제한 고려)
+                        if len(checklist_json) > 100000:  # 100KB 제한
+                            print(f"⚠️ SEO Checklist JSON이 너무 큽니다 ({len(checklist_json)}자). 크기를 줄입니다.")
+                            checklist_json = checklist_json[:100000]
                         review_update_data['SEO Checklist'] = checklist_json
                         print(f"✅ SEO Checklist JSON 저장: {len(checklist_json)}자")
-                elif is_legal_score:
+                
+                # Legal 점수와 체크리스트 처리 (SEO와 별도로 처리)
+                if is_legal_score:
                     review_update_data['Legal Score'] = weighted_total
                     if checklist_json:
+                        # 체크리스트 JSON 크기 제한 (Airtable 제한 고려)
+                        if len(checklist_json) > 100000:  # 100KB 제한
+                            print(f"⚠️ Legal Checklist JSON이 너무 큽니다 ({len(checklist_json)}자). 크기를 줄입니다.")
+                            checklist_json = checklist_json[:100000]
                         review_update_data['Legal Checklist'] = checklist_json  
                         print(f"✅ Legal Checklist JSON 저장: {len(checklist_json)}자")
                 
                 if existing_reviews:
                     # 기존 레코드 업데이트
                     review_record_id = existing_reviews[0]['id']
-                    reviews_table.update(review_record_id, review_update_data)
+                    existing_data = existing_reviews[0]['fields']
+                    print(f"🔧 기존 Post Review 레코드 업데이트: {review_record_id}")
+                    
+                    # 기존 데이터와 새 데이터 병합 (기존 점수/체크리스트 보존)
+                    merged_data = existing_data.copy()
+                    merged_data.update(review_update_data)
+                    
+                    print(f"📝 기존 데이터: {existing_data}")
+                    print(f"📝 새 데이터: {review_update_data}")
+                    print(f"📝 병합된 데이터: {merged_data}")
+                    
+                    reviews_table.update(review_record_id, merged_data)
                     print(f"✅ Post Review 업데이트 완료: {post_id}")
                 else:
                     # 새 레코드 생성
                     review_update_data['Post ID'] = post_id
+                    print(f"🔧 새 Post Review 레코드 생성")
+                    print(f"📝 생성 데이터: {review_update_data}")
                     reviews_table.create(review_update_data)
                     print(f"✅ Post Review 생성 완료: {post_id}")
                     
             except Exception as review_error:
                 print(f"⚠️ Post Reviews 업데이트 실패 (Medicontent Posts는 성공): {review_error}")
+                import traceback
+                print(f"🔍 Post Reviews 업데이트 실패 상세:")
+                traceback.print_exc()
             
             print(f"✅ Medicontent Posts 자동 업데이트 완료!")
             print(f"   Content 파일: {content_file.name}")
@@ -719,7 +804,6 @@ def _extract_images_and_clean_text(raw: str) -> Tuple[str, int]:
 
 def _calculate_morphemes(text: str) -> int:
     """형태소 개수 계산 (kiwipiepy 사용)"""
-    from kiwipiepy import Kiwi
     kiwi = Kiwi()
 
     # 형태소 토큰화
@@ -760,21 +844,97 @@ def _calculate_morphemes(text: str) -> int:
     return len(final_tokens)
 
 def _count_syllables_extended(text: str) -> int:
-    """어절 카운트 (공백 기준 분리)"""
-    # 1) HTML 태그 제거
-    clean = re.sub(r'<[^>]*>', ' ', text)
-    
-    # 2) 숫자/기호/이모지/마크업 간단 제거
-    clean = re.sub(r'[*_`<>\[\]()…·•"""\'!?.,:;]|[\U0001F300-\U0001FAFF]', ' ', clean)
-    
-    # 3) 연속된 공백을 하나로 통일
-    clean = re.sub(r'\s+', ' ', clean).strip()
-    
-    # 4) 공백 기준으로 어절 분리 (한글/영문이 포함된 것만)
-    words = [word for word in clean.split() if re.search(r'[가-힣A-Za-z]', word)]
-    
-    print(f"DEBUG - 어절 카운트: '{clean[:50]}...' -> {len(words)}개 어절")
+    # 숫자/기호/이모지/마크업 간단 제거 후 어절 카운트
+    clean = re.sub(r'[*_`<>\[\]()…·•“”"\'!?.,:;]|[\U0001F300-\U0001FAFF]', ' ', text)
+    words = re.findall(r'[가-힣A-Za-z]+', clean)  # 한글/영문 덩어리만
     return len(words)
+
+def _preprocess_for_count(text: str) -> str:
+    """ 마크업/이모지/짧은 헤딩/담화표지/영문/숫자 정리"""
+    s = unicodedata.normalize('NFC', text)
+
+    # 마크업/따옴표/이모지류 제거
+    s = re.sub(r'[*_`]+', ' ', s)
+    s = re.sub(r'[“”″‟＂"『』《》【】]', ' ', s)
+    s = re.sub(r'[\U0001F300-\U0001FAFF\U00002700-\U000027BF]+', ' ', s)
+
+    # 짧은 헤딩 라인 컷(구두점 거의 없는 1~4어절)
+    lines = [ln.strip() for ln in s.splitlines()]
+    pruned = []
+    for ln in lines:
+        if not ln: continue
+        if re.fullmatch(r'[<>\[\]()\-–—~·•]+', ln): continue
+        if len(ln.split()) <= 4 and not re.search(r'[.,?!:;…·]|[0-9]', ln):
+            continue
+        pruned.append(ln)
+    s = ' '.join(pruned)
+
+    # 담화 표지 컷(필요시 추가)
+    FILLERS = ["안녕하세요", "여러분", "자", "그럼", "오늘은", "함께",
+               "어떠셨나요", "감사합니다", "마무리", "참고하세요"]
+    for f in FILLERS:
+        s = re.sub(rf'\b{re.escape(f)}\b', ' ', s)
+
+    # 숫자/백분율/영문 표준화(이후 카운트 제외)
+    s = re.sub(r'\b\d+(\.\d+)?\s*%\b', ' ', s)      # % 지우기
+    s = re.sub(r'\b\d{1,4}([.,]\d{3})+(\.\d+)?\b', ' ', s)  # 1,234,567.89
+    s = re.sub(r'\b\d+(\.\d+)?\b', ' ', s)          # 일반 숫자
+    s = re.sub(r'\b[a-zA-Z]{2,}\b', ' ', s)         # 영문 단어 제거
+
+    s = re.sub(r'\s{2,}', ' ', s).strip()
+    return s
+
+def total_word_count(text: str,
+                     include_modifiers: bool = False,  # 수식언 제외(158 프리셋)
+                     noun_run_merge_k: int = 4,        # 명사 4개까지 병합(158 프리셋)
+                     unique: bool = True               # 유니크 카운트(158 프리셋)
+                     ) -> int:
+    """전처리 + 형태소 정규화 기반 '총 단어 개수' 집계(내부 알고리즘 근사)"""
+    text = _preprocess_for_count(text)
+
+    kiwi = Kiwi()
+    toks = kiwi.tokenize(text)
+
+    NOUN = {"NNG","NNP","NNB","NR"}
+    VERB = {"VV","VA","VCP","VCN"}
+    KEEP = set(NOUN) | VERB | {"VX"}
+    if include_modifiers:
+        KEEP |= {"MM","MAG","MAJ"}
+
+    content = [t for t in toks if t.tag in KEEP]
+
+    # 표제어화
+    pairs = [(t.form + "다", t.tag) if t.tag in VERB else (t.form, t.tag)
+             for t in content]
+
+    # 보조용언 체인 병합: (VV|VA) + (VX)+
+    merged = []
+    i, L = 0, len(pairs)
+    while i < L:
+        f, tag = pairs[i]
+        if tag in {"VV","VA"}:
+            j, acc = i+1, f
+            while j < L and pairs[j][1] == "VX":
+                acc += pairs[j][0]; j += 1
+            merged.append((acc, "VV"))
+            i = j
+        else:
+            merged.append((f, tag)); i += 1
+
+    # 연속 명사 병합: 최대 k개
+    final = []
+    i, L = 0, len(merged)
+    while i < L:
+        f, tag = merged[i]
+        if tag in NOUN and noun_run_merge_k >= 2:
+            run = [f]; j = i+1
+            while j < L and merged[j][1] in NOUN and len(run) < noun_run_merge_k:
+                run.append(merged[j][0]); j += 1
+            final.append(''.join(run)); i = j
+        else:
+            final.append(f); i += 1
+
+    return len(set(final)) if unique else len(final)
 
 def calculate_seo_metrics(title: str, content: str, html_content: str = None) -> Dict[str, int]:
     """SEO 평가용 실제 측정값 (렌더 결과 기준: 이미지/alt/파일명 제거, 줄바꿈 제외)
@@ -811,7 +971,7 @@ def calculate_seo_metrics(title: str, content: str, html_content: str = None) ->
     syllable_count = _count_syllables_extended(cleaned)
 
     # 7. 단어(정제 텍스트 기준)
-    word_count = len(re.findall(r'[\w가-힣]+', cleaned))
+    word_count = total_word_count(cleaned, include_modifiers=False, noun_run_merge_k=4, unique=True)
 
     # 8. 어뷰징 단어(정제 텍스트 기준)
     abusing_patterns = [
@@ -1206,10 +1366,10 @@ def over_threshold(scores: Dict[str, int], criteria: Dict[str, Dict[str, int]], 
         limit = th.get(key, 5)
         # SEO와 의료법 평가 기준 다르게 적용
         if evaluation_mode == "seo":
-            if v < limit:  # SEO: 점수가 낮으면 위반
+            if v <= limit:  # SEO: 점수가 낮으면 위반
                 violations.append(idx)
         else:
-            if v > limit:  # 의료법: 점수가 높으면 위반
+            if v >= limit:  # 의료법: 점수가 높으면 위반
                 violations.append(idx)
     return violations
 
@@ -1467,9 +1627,8 @@ def get_seo_grade_by_actual_value(actual_value: int, item_num: int) -> str:
             'B': [(4, 11), (12, 21)], 
             'C': [(4, 11), (22, 30)], 
             'D': [(0, 3), (31, 999)]
-        },                    # 본문 이미지
+        },               # 본문 이미지
     }
-    
     
     if item_num not in grade_criteria:
         return "N/A"
@@ -1870,14 +2029,23 @@ def run_single_mode(criteria_mode: str = "표준",
                     "content": content
                 }
         
-                out_path = log_dir_path / f"{current_timestamp}_evaluation_declined.json"
+                out_path = log_dir_path / f"{current_timestamp}_evaluation.json"
                 _write_json(out_path, out)
                 print(f"⚠️ 재생성 거부. 원본 평가 결과 저장: {out_path.name}")
                 
                 # ⭐ UI checklist 로그 생성
                 generate_ui_checklist_logs(out, str(out_path))
                 
-                return
+                # 평가 결과 반환 (재생성하지 않은 경우 evaluation.json)
+                return {
+                    "status": "completed",
+                    "scores": {
+                        "weighted_total": weighted_total_before,
+                        "criteria": criteria_mode,
+                        "evaluation_mode": evaluation_mode
+                    },
+                    "evaluation_file": str(out_path)
+                }
                 
 
         # ⭐ 재생성 전 평가 결과 저장 (BEFORE)
@@ -1941,13 +2109,13 @@ def run_single_mode(criteria_mode: str = "표준",
             "content": content
         }
         
-        # 재생성 전 평가 결과 저장
-        before_out_path = log_dir_path / f"{current_timestamp}_evaluation_before.json"
-        _write_json(before_out_path, before_out)
-        print(f"💾 재생성 전 평가 결과 저장: {before_out_path.name}")
+        # 최초 평가 결과 저장 (evaluation.json)
+        eval_out_path = log_dir_path / f"{current_timestamp}_evaluation.json"
+        _write_json(eval_out_path, before_out)
+        print(f"💾 최초 평가 결과 저장: {eval_out_path.name}")
         
-        # ⭐ 재생성 전 UI checklist 로그도 생성
-        generate_ui_checklist_logs(before_out, str(before_out_path))
+        # ⭐ 최초 UI checklist 로그 생성
+        generate_ui_checklist_logs(before_out, str(eval_out_path))
 
         # 재생성 → 패치
         stage = map_stage(violations_before)
@@ -1982,7 +2150,87 @@ def run_single_mode(criteria_mode: str = "표준",
                                     int(llm_scores.get(str(i),0))) for i in range(1,max_items + 1)}
         violations_before = over_threshold(final_scores, criteria, criteria_mode, evaluation_mode)
         weighted_total_before = weighted_total(final_scores, weights, evaluation_mode)
-        # 다음 루프
+        
+        # 최종 평가 결과 생성 (after)
+        after_out = {
+            "input": {
+                "source_log": content_path.name,
+                "title": title,
+                "content": content,
+                "content_len": len(content)
+            },
+            "modes": {"criteria": criteria_mode},
+            "scores": {
+                "by_item": {
+                    str(i): {
+                        "name": (SEO_CHECKLIST_NAMES[i] if evaluation_mode == "seo" else CHECKLIST_NAMES[i]),
+                        "rule_score": int(rule_all.get(str(i),{}).get("score",0)),
+                        "llm_score": int(llm_scores.get(str(i),0)),
+                        "final_score": int(final_scores.get(str(i),0)),
+                        "threshold": criteria[criteria_mode].get(str(i),5),
+                        "passed": int(final_scores.get(str(i),0)) <= criteria[criteria_mode].get(str(i),5),
+                        "evidence": {
+                            "regex_hits": rule_all.get(str(i),{}).get("hits",[]),
+                        },
+                        **({"actual_value": seo_metrics.get(i, 0)} if evaluation_mode == "seo" else {}),
+                        
+                        # 의료법 전용 필드 추가
+                        **({"compliance_level": get_medical_compliance_level_by_item(
+                            int(final_scores.get(str(i),0)), i
+                        )} if evaluation_mode == "medical" else {}),
+                        **({"violation_status": get_medical_violation_status(
+                            int(final_scores.get(str(i),0)), 
+                            criteria[criteria_mode].get(str(i),5)
+                        )} if evaluation_mode == "medical" else {}),
+                        
+                        # SEO 전용 필드 추가
+                        **({"grade": get_seo_grade_by_actual_value(seo_metrics.get(i, 0), i)} if evaluation_mode == "seo" else {}),
+                        **({"pass_status": get_pass_status_by_threshold(
+                            int(final_scores.get(str(i),0)), 
+                            criteria[criteria_mode].get(str(i),5), 
+                            evaluation_mode
+                        )} if evaluation_mode == "seo" else {})
+                    } for i in range(1, 10 if evaluation_mode == "seo" else 16)
+                },
+                "weighted_total": weighted_total_before,
+                "llm_total_raw": sum(int(llm_scores.get(str(i),0)) for i in range(1, 10 if evaluation_mode == "seo" else 16)),
+                "rule_total_proxy": sum(int(rule_all.get(str(i),{}).get("score",0)) for i in range(1, 10 if evaluation_mode == "seo" else 16))
+            },
+            "violations": {
+                "over_threshold": violations_before,
+                "names": [(SEO_CHECKLIST_NAMES[i] if evaluation_mode == "seo" else CHECKLIST_NAMES[i]) for i in violations_before]
+            },
+            "regen_fit": {
+                "applied": patched_once,
+                "stage": "after_regeneration" if patched_once else "no_regeneration"
+            },
+            "notes": {
+                "recommendations": tips,
+                "report_weights": weights
+            },
+            "title": title,
+            "content": content
+        }
+        
+        # after 결과 저장
+        after_out_path = log_dir_path / f"{current_timestamp}_evaluation_after.json"
+        _write_json(after_out_path, after_out)
+        
+        # ⭐ after UI checklist 로그 생성
+        generate_ui_checklist_logs(after_out, str(after_out_path))
+        
+        print(f"✅ 최종 평가 결과 저장: {after_out_path.name}")
+        
+        # 평가 결과 반환 (재생성된 경우 after 파일)
+        return {
+            "status": "completed",
+            "scores": {
+                "weighted_total": weighted_total_before,
+                "criteria": criteria_mode,
+                "evaluation_mode": evaluation_mode
+            },
+            "evaluation_file": str(after_out_path)
+        }
 
 def run(criteria_mode: str = "표준",
         max_loops: int = 2,
@@ -2003,6 +2251,9 @@ def run(criteria_mode: str = "표준",
     if evaluation_mode == "both":
         print("🔄 순차 평가 모드: 의료법 → SEO 평가를 순차 실행합니다")
         print("=" * 60)
+        
+        # log_dir_path 정의
+        log_dir_path = Path(log_dir) if log_dir else DEFAULT_LOG_DIR
         
         # 1) 의료법 평가 실행
         print("📋 1단계: 의료법 평가 실행 중...")
@@ -2026,6 +2277,30 @@ def run(criteria_mode: str = "표준",
                 evaluation_mode="medical"
             )
             print("✅ 의료법 평가 완료!")
+            
+            # 의료법 평가 완료 후 DB 업데이트
+            try:
+                # 의료법 평가 파일에서 타임스탬프 추출하여 content.json 찾기 (최초 + 재생성 모두 검색)
+                medical_eval_files = list(log_dir_path.glob("**/*_evaluation.json")) + list(log_dir_path.glob("**/*_evaluation_after.json"))
+                if medical_eval_files:
+                    latest_medical_eval = max(medical_eval_files, key=lambda x: x.stat().st_mtime)
+                    print(f"🔍 의료법 평가 파일 발견: {latest_medical_eval}")
+                    
+                    # 평가 파일에서 실제 데이터 읽기
+                    with open(latest_medical_eval, 'r', encoding='utf-8') as f:
+                        medical_eval_data = json.load(f)
+                    
+                    content_file = _find_content_file_for_evaluation(str(latest_medical_eval), log_dir_path)
+                    if content_file:
+                        auto_update_medicontent_posts(medical_eval_data, str(latest_medical_eval))
+                        print("✅ 의료법 평가 결과 DB 업데이트 완료!")
+                    else:
+                        print("⚠️ content.json 파일을 찾을 수 없어 DB 업데이트를 건너뜁니다.")
+                else:
+                    print("⚠️ 의료법 평가 파일을 찾을 수 없어 DB 업데이트를 건너뜁니다.")
+            except Exception as update_e:
+                print(f"⚠️ 의료법 평가 결과 DB 업데이트 실패: {update_e}")
+                
         except Exception as e:
             print(f"❌ 의료법 평가 실패: {e}")
         
@@ -2053,13 +2328,140 @@ def run(criteria_mode: str = "표준",
                 evaluation_mode="seo"
             )
             print("✅ SEO 평가 완료!")
+            
+            # SEO 평가 완료 후 DB 업데이트
+            try:
+                # SEO 평가 파일에서 타임스탬프 추출하여 content.json 찾기 (최초 + 재생성 모두 검색)
+                seo_eval_files = list(log_dir_path.glob("**/*_evaluation.json")) + list(log_dir_path.glob("**/*_evaluation_after.json"))
+                if seo_eval_files:
+                    latest_seo_eval = max(seo_eval_files, key=lambda x: x.stat().st_mtime)
+                    print(f"🔍 SEO 평가 파일 발견: {latest_seo_eval}")
+                    
+                    # 평가 파일에서 실제 데이터 읽기
+                    with open(latest_seo_eval, 'r', encoding='utf-8') as f:
+                        seo_eval_data = json.load(f)
+                    
+                    content_file = _find_content_file_for_evaluation(str(latest_seo_eval), log_dir_path)
+                    if content_file:
+                        auto_update_medicontent_posts(seo_eval_data, str(latest_seo_eval))
+                        print("✅ SEO 평가 결과 DB 업데이트 완료!")
+                    else:
+                        print("⚠️ content.json 파일을 찾을 수 없어 DB 업데이트를 건너뜁니다.")
+                else:
+                    print("⚠️ SEO 평가 파일을 찾을 수 없어 DB 업데이트를 건너뜁니다.")
+            except Exception as update_e:
+                print(f"⚠️ SEO 평가 결과 DB 업데이트 실패: {update_e}")
+                
         except Exception as e:
             print(f"❌ SEO 평가 실패: {e}")
         
         print("=" * 60)
         print("🎉 순차 평가 완료! 의료법과 SEO 평가가 각각 독립적으로 실행되었습니다.")
         
-        return None
+        # both 모드 완료 후 Status를 '작업 완료'로 업데이트
+        try:
+            print("🔄 both 모드 완료 - Status를 '작업 완료'로 업데이트 중...")
+            
+            # content.json 파일에서 Post ID 추출
+            content_files = list(log_dir_path.glob("**/*_content.json"))
+            if content_files:
+                latest_content = max(content_files, key=lambda x: x.stat().st_mtime)
+                
+                with open(latest_content, 'r', encoding='utf-8') as f:
+                    content_data = json.load(f)
+                
+                # Post ID 추출
+                post_id = None
+                if 'meta' in content_data:
+                    meta = content_data['meta']
+                    if 'post_id' in meta and meta['post_id']:
+                        post_id = str(meta['post_id'])
+                    elif 'post_data_request_id' in meta and meta['post_data_request_id']:
+                        post_id = str(meta['post_data_request_id'])
+                
+                if post_id:
+                    # Airtable에서 Medicontent Posts 레코드 찾기
+                    load_dotenv()
+                    from pyairtable import Api
+                    
+                    api = Api(os.getenv('AIRTABLE_API_KEY'))
+                    posts_table = api.table(os.getenv('AIRTABLE_BASE_ID'), 'Medicontent Posts')
+                    
+                    # Post ID로 레코드 검색
+                    records = posts_table.all(formula=f"{{Post Id}} = '{post_id}'")
+                    if records:
+                        record_id = records[0]['id']
+                        
+
+                    else:
+                        print(f"⚠️ Post ID '{post_id}'에 해당하는 레코드를 찾을 수 없습니다.")
+                else:
+                    print("⚠️ content.json에서 Post ID를 추출할 수 없습니다.")
+            else:
+                print("⚠️ content.json 파일을 찾을 수 없습니다.")
+                
+        except Exception as e:
+            print(f"⚠️ Status 업데이트 실패: {e}")
+        
+        # 평가 결과 반환을 위해 최신 로그에서 점수 정보 추출
+        try:
+            # 최신 evaluation 로그에서 점수 정보 추출
+            log_dir_path = Path(log_dir) if log_dir else DEFAULT_LOG_DIR
+            
+            # 의료법과 SEO 결과를 각각 찾기
+            medical_score = None
+            seo_score = None
+            
+            # 최신 평가 파일들 찾기
+            eval_files = sorted(log_dir_path.glob("*_evaluation*.json"), key=lambda x: x.stat().st_mtime, reverse=True)
+            
+            for eval_file in eval_files[:5]:  # 최근 5개 파일만 확인
+                try:
+                    with open(eval_file, 'r', encoding='utf-8') as f:
+                        eval_data = json.load(f)
+                    
+                    # 의료법 결과인지 SEO 결과인지 판단
+                    modes = eval_data.get("modes", {})
+                    criteria = modes.get("criteria", "")
+                    scores = eval_data.get("scores", {})
+                    weighted_total_val = scores.get("weighted_total", 0)
+                    
+                    if criteria in ["엄격", "표준", "유연"] and medical_score is None:
+                        medical_score = weighted_total_val
+                        print(f"📋 의료법 점수 추출: {medical_score} (기준: {criteria})")
+                    elif criteria in ["우수", "양호", "보통"] and seo_score is None:
+                        seo_score = weighted_total_val
+                        print(f"📈 SEO 점수 추출: {seo_score} (기준: {criteria})")
+                    
+                    # 둘 다 찾으면 종료
+                    if medical_score is not None and seo_score is not None:
+                        break
+                        
+                except Exception as e:
+                    print(f"⚠️ 평가 파일 읽기 실패: {eval_file.name} - {e}")
+                    continue
+            
+            # 결과 구조체 생성
+            result = {
+                "status": "completed",
+                "scores": {
+                    "medical_score": medical_score,
+                    "seo_score": seo_score,
+                    "weighted_total": seo_score or medical_score  # 사용 가능한 점수 반환
+                },
+                "evaluation_mode": "both"
+            }
+            
+            print(f"📊 최종 반환 결과: {result}")
+            return result
+            
+        except Exception as e:
+            print(f"⚠️ 점수 추출 실패: {e}")
+            return {
+                "status": "completed", 
+                "scores": {"weighted_total": 0},
+                "evaluation_mode": "both"
+            }
     else:
         # 개별 모드 실행
         print(f"🎯 개별 평가 모드: {evaluation_mode} 평가만 실행합니다")
@@ -2099,3 +2501,70 @@ if __name__ == "__main__":
         report_path=(args.report_path or None),
         evaluation_mode=args.evaluation_mode)
 
+
+def _find_content_file_for_evaluation(evaluation_file_path: str, log_dir_path: Path) -> Union[Path, None]:
+    """
+    평가 파일과 연관된 content.json 파일을 찾는 헬퍼 함수
+    
+    Args:
+        evaluation_file_path: 평가 파일 경로
+        log_dir_path: 로그 디렉토리 경로
+        
+    Returns:
+        content.json 파일 경로 또는 None
+    """
+    try:
+        # 1. evaluation.json 파일에서 source_log 읽기
+        with open(evaluation_file_path, 'r', encoding='utf-8') as f:
+            eval_data = json.load(f)
+        
+        source_log = eval_data.get("input", {}).get("source_log", "")
+        if not source_log:
+            print(f"⚠️ evaluation.json에서 source_log를 찾을 수 없습니다.")
+            return None
+        
+        print(f"🔍 source_log에서 추출: {source_log}")
+        
+        # 2. source_log에서 타임스탬프 추출 (YYYYMMDD_HHMMSS)
+        import re
+        timestamp_match = re.search(r'(\d{8}_\d{6})', source_log)
+        if not timestamp_match:
+            print(f"⚠️ source_log에서 타임스탬프를 찾을 수 없습니다: {source_log}")
+            return None
+            
+        timestamp = timestamp_match.group(1)
+        print(f"🔍 source_log에서 추출한 타임스탬프: {timestamp}")
+        
+        # 3. content.json 파일 찾기
+        content_patterns = [
+            f"{timestamp}_content.json"
+        ]
+        
+        # 검색할 디렉토리들
+        search_dirs = [
+            log_dir_path,  # 로그 디렉토리
+            log_dir_path.parent,  # 상위 디렉토리
+        ]
+        
+        # 날짜별 하위 디렉토리도 검색
+        if log_dir_path.exists():
+            for date_dir in log_dir_path.iterdir():
+                if date_dir.is_dir() and date_dir.name.isdigit() and len(date_dir.name) == 8:
+                    search_dirs.append(date_dir)
+        
+        # content.json 파일 검색
+        for pattern in content_patterns:
+            for search_dir in search_dirs:
+                if search_dir.exists():
+                    found_files = list(search_dir.glob(pattern))
+                    if found_files:
+                        content_file = found_files[0]
+                        print(f"✅ content.json 파일 발견: {content_file}")
+                        return content_file
+        
+        print(f"⚠️ 타임스탬프 {timestamp}에 해당하는 content.json 파일을 찾을 수 없습니다.")
+        return None
+        
+    except Exception as e:
+        print(f"❌ content.json 파일 검색 실패: {e}")
+        return None

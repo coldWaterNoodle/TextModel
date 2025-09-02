@@ -557,9 +557,9 @@ export async function POST(request: NextRequest) {
                         actualPostDataRequestPostIdFull = actualMedicontentPostId;
                     }
                     
-                    // 안전한 상태값 사용
-                    await AirtableService.updatePostStatus(medicontentPost.id, '대기');
-                    console.log('✅ Medicontent Posts 상태 변경: 대기 (안전한 기본값)');
+                    // input agent 시작을 의미하므로 '병원 작업 중'으로 설정
+                    await AirtableService.updatePostStatus(medicontentPost.id, '병원 작업 중');
+                    console.log('✅ Medicontent Posts 상태 변경: 병원 작업 중 (input agent 시작)');
                 } else {
                     console.warn('⚠️ Medicontent Posts를 찾을 수 없어서 상태 변경 생략');
                 }
@@ -765,9 +765,9 @@ export async function PUT(request: NextRequest) {
                         actualPostDataRequestPostIdFull = actualMedicontentPostId;
                     }
                     
-                    // 안전한 상태값 사용
-                    await AirtableService.updatePostStatus(medicontentPost.id, '대기');
-                    console.log('✅ Medicontent Posts 상태 변경 (PUT): 대기 (안전한 기본값)');
+                    // input agent 업데이트를 의미하므로 '병원 작업 중'으로 설정
+                    await AirtableService.updatePostStatus(medicontentPost.id, '병원 작업 중');
+                    console.log('✅ Medicontent Posts 상태 변경 (PUT): 병원 작업 중 (input agent 업데이트)');
                 } else {
                     console.warn('⚠️ Medicontent Posts를 찾을 수 없어서 상태 변경 생략 (PUT)');
                 }

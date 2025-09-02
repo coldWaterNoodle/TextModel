@@ -2,7 +2,9 @@ import json
 import re
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
+
+
 
 class BlogHTMLConverter:
     def __init__(self, template_path: str = "templates/blog_template.html"):
@@ -100,7 +102,15 @@ class BlogHTMLConverter:
             react_mode: True면 React 호환 형태로 생성 (body 내용만)
         """
         data = json.loads(json_path.read_text(encoding='utf-8'))
+        return self.convert_json_to_html_from_data(data, react_mode)
+    
+    def convert_json_to_html_from_data(self, data: dict, react_mode: bool = False) -> str:
+        """JSON 데이터(dict)를 HTML로 변환
         
+        Args:
+            data: JSON 데이터 딕셔너리
+            react_mode: True면 React 호환 형태로 생성 (body 내용만)
+        """
         # 템플릿 변수 생성
         template_vars = {
             'title': data.get('title', '제목 없음'),
@@ -209,8 +219,9 @@ class BlogHTMLConverter:
         images_html = ""
         for img in images:
             original_path = img.get('path', '')
-            alt_text = img.get('alt', '')
+            alt_text = img.get('alt') or img.get('description') or ""
             is_emote = (img.get('position') == 'emoticon')  # ← 추가
+            is_emoticon_gif = img.get('is_emoticon', False)  # content 이모티콘 gif 구분
 
             # 🔧 Airtable URL 우선 사용 (프록시 URL 포함)
             if img.get('url') and (img['url'].startswith(('http://', 'https://')) or img['url'].startswith('/airtable/')):
@@ -230,10 +241,12 @@ class BlogHTMLConverter:
                 continue
         
             if react_mode:
-                if is_emote:
-                    style_obj = '{width:"100px",height:"100px",objectFit:"contain",verticalAlign:"middle"}'
+                if is_emote or (is_emoticon_gif and not alt_text):
+                    # 이모티콘: 작은 크기 (React 스타일 객체)
+                    style_obj = '{ width: 100, height: 100, objectFit: "contain", verticalAlign: "middle" }'
                 else:
-                    style_obj = '{width:"100%",maxWidth:"500px",height:"auto"}'
+                    # 일반 이미지: 크게 (비율 유지, 최대 높이 제한)
+                    style_obj = '{ width: 400, height: "auto", maxHeight: 700, objectFit: "contain", verticalAlign: "middle" }'
                 images_html += f'''
             <figure>
                 <img src="{img_path}" alt="{alt_text}" style={style_obj} />
@@ -241,16 +254,22 @@ class BlogHTMLConverter:
             </figure>
             '''
             else:
-                if is_emote:
+                if is_emote or (is_emoticon_gif and not alt_text):
+                    # 이모티콘: 작은 크기 (HTML 인라인 스타일)
                     style_attr = 'width:100px; height:100px; object-fit:contain; vertical-align:middle;'
+                    images_html += f'<img src="{img_path}" alt="{alt_text}" style="{style_attr}">'
                 else:
-                    style_attr = 'width:100% !important; max-width:500px !important; height:auto;'
-                images_html += f'''
+                    # 일반 이미지: 크게 (비율 유지, 최대 높이 제한) - 쉼표 → 세미콜론 오타 수정함
+                    style_attr = 'width:400px; height:auto; max-height:700px; object-fit:contain; vertical-align:middle;'
+                    images_html += f'''
             <figure>
-                <img src="{img_path}" alt="{alt_text}" style="{style_attr}">
+                <img src="{img_path}" alt="{alt_text}" style="{style_attr}" loading="lazy">
                 <figcaption>{alt_text}</figcaption>
             </figure>
             '''
+            
+            # 이미지 다음에 줄바꿈 추가
+            images_html += '\n'
         return images_html
     
     def _build_hashtags(self, data: Dict) -> str:
@@ -286,25 +305,6 @@ class BlogHTMLConverter:
 
         # 1) 이스케이프 줄바꿈 정리
         text = text.replace('\\n\\n', '\n\n').replace('\\n', '\n')
-
-        # 2) (중요) 이모티콘 URL -> <img> 변환 (airtable / .gif)
-        def _emote_img(u: str) -> str:
-            if react_mode:
-                # React는 style 객체
-                return f'<img src="{u}" alt="" style={{width:"100px",height:"100px",objectFit:"contain",verticalAlign:"middle"}} />'
-            else:
-                return f'<img src="{u}" alt="" style="width:100px;height:100px;object-fit:contain;vertical-align:middle;">'
-
-        # (1) 괄호형 ( ... )
-        text = re.sub(
-            r'[（\(]\s*(https?://[^)\s]*?(?:airtableusercontent\.com|\.gif)[^)\s]*)\s*[）\)]',
-            lambda m: _emote_img(m.group(1)), text
-        )
-        # (2) 평문 URL
-        text = re.sub(
-            r'(https?://[^\s<>"\)]*?(?:airtableusercontent\.com|\.gif)[^\s<>"\)]*)',
-            lambda m: _emote_img(m.group(1)), text
-        )
 
         # 3) 마크다운 <strong>/<em> 등
         text = re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', text)

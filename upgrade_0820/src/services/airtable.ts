@@ -922,7 +922,7 @@ export class AirtableService {
                 console.log('📝 새 레코드 생성 중...');
                 const newRecord = await base('Post Data Requests').create({
                     'Post ID': postId, // Medicontent Posts의 Post Id와 동일한 값
-                    'Status': '병원 작업 중',
+                    'Status': '대기',
                 });
                 console.log('✅ 새 레코드 생성됨:', newRecord.id);
                 return newRecord.id;
