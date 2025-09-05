@@ -680,7 +680,7 @@ CHECKLIST_NAMES = {
 SEO_CHECKLIST_NAMES = {
     1: "제목 글자수 (공백 포함)", 2: "제목 글자수 (공백 제외)", 3: "본문 글자수 (공백 포함)",
     4: "본문 글자수 (공백 제외)", 5: "총 형태소 개수", 6: "총 음절 개수",
-    7: "총 단어 개수", 8: "어뷰징 단어 개수", 9: "본문 이미지"
+    7: "총 단어 개수", 8: "어뷰징 단어 개수", 9: "본문 이미지", 10: "백링크 존재 여부"
 }
 
 # ===== 리포트 가중치 (기본값) =====
@@ -936,6 +936,27 @@ def total_word_count(text: str,
 
     return len(set(final)) if unique else len(final)
 
+def count_backlinks_in_html(html_content: str) -> int:
+    """HTML에서 외부 백링크 개수 계산"""
+    from urllib.parse import urlparse
+
+    if not html_content:
+        return 0
+    
+    href_pattern = r'<a[^>]*href=["\']([^"\']*)["\'][^>]*>'
+    matches = re.findall(href_pattern, html_content, re.IGNORECASE)
+
+    external_links = 0
+    for url in matches:
+        # 내부 링크 재외 (#, 상대경로, javascript, mailto: 등)
+        if (url.startswith('http://') or url.startswith('https://')) and \
+            not url.startswith('#') and \
+            not url.startswith('javascript:') and \
+            not url.startswith('mailto:') :
+                external_links += 1
+                
+    return external_links
+
 def calculate_seo_metrics(title: str, content: str, html_content: str = None) -> Dict[str, int]:
     """SEO 평가용 실제 측정값 (렌더 결과 기준: 이미지/alt/파일명 제거, 줄바꿈 제외)
     
@@ -995,6 +1016,14 @@ def calculate_seo_metrics(title: str, content: str, html_content: str = None) ->
         # HTML이 없으면 기존 방식으로 TXT에서 계산
         _, image_count = _extract_images_and_clean_text(content)
         print(f"DEBUG - 본문 이미지: TXT에서 {image_count}개 발견 (HTML 없음)")
+    
+    # 10. 외부 백링크 개수 - HTML에서 <a> 태그만 계산
+    backlink_count = 0
+    if html_content:
+        backlink_count = count_backlinks_in_html(html_content)
+        print(f"DEBUG - 외부 백링크: HTML에서 {backlink_count}개 발견")
+    else:
+        print(f"DEBUG - 외부 백링크: HTML 없음")
 
     return {
         1: title_with_space,
@@ -1005,7 +1034,8 @@ def calculate_seo_metrics(title: str, content: str, html_content: str = None) ->
         6: syllable_count,
         7: word_count,
         8: abusing_count,
-        9: image_count
+        9: image_count,
+        10: backlink_count
     }
 
 # ===== 유틸 =====
@@ -1101,7 +1131,59 @@ def _extract_json(raw: str) -> Dict[str, Any]:
     if start != -1 and end != -1 and end > start:
         text = text[start:end+1]
     text = text.strip().strip("`").strip()
-    return json.loads(text)
+    
+    # JSON 파싱 전에 디버깅 정보 출력
+    print(f"DEBUG - JSON 파싱 시도 중...")
+    print(f"DEBUG - 텍스트 길이: {len(text)}")
+    if len(text) > 2000:
+        print(f"DEBUG - 텍스트 앞부분 (2000자): {text[:2000]}")
+        print(f"DEBUG - 텍스트 뒷부분 (2000자): {text[-2000:]}")
+    else:
+        print(f"DEBUG - 전체 텍스트: {text}")
+    
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as e:
+        print(f"❌ JSON 파싱 오류: {e}")
+        print(f"❌ 오류 위치: line {e.lineno}, column {e.colno}")
+        if e.lineno == 1 and e.colno > 1800:
+            print(f"❌ 문제가 되는 부분 (1810-1820자): {text[1810:1820] if len(text) > 1820 else '텍스트가 너무 짧음'}")
+        
+        # JSON 수정 시도
+        print("🔧 JSON 수정 시도 중...")
+        try:
+            # 일반적인 JSON 오류 수정
+            fixed_text = text
+            
+            # 1. 따옴표 문제 수정
+            fixed_text = re.sub(r'([^\\])\"([^"]*)\"([^\\])', r'\1"\2"\3', fixed_text)
+            
+            # 2. 쉼표 누락 수정 (마지막 항목 뒤 쉼표 제거)
+            fixed_text = re.sub(r',\s*}', '}', fixed_text)
+            fixed_text = re.sub(r',\s*]', ']', fixed_text)
+            
+            # 3. 중괄호/대괄호 불일치 수정
+            open_braces = fixed_text.count('{')
+            close_braces = fixed_text.count('}')
+            if open_braces > close_braces:
+                fixed_text += '}' * (open_braces - close_braces)
+            elif close_braces > open_braces:
+                fixed_text = fixed_text.rstrip('}') + '}' * (close_braces - open_braces)
+            
+            print(f"🔧 수정된 JSON 길이: {len(fixed_text)}")
+            return json.loads(fixed_text)
+            
+        except json.JSONDecodeError as e2:
+            print(f"❌ JSON 수정 후에도 파싱 실패: {e2}")
+            print(f"❌ 원본 텍스트를 그대로 반환합니다.")
+            # 최후의 수단: 빈 결과 반환
+            return {
+                "평가결과": {str(i): 0 for i in range(1, 11)},
+                "총점": 0,
+                "세부등급": {str(i): "D" for i in range(1, 11)},
+                "개선필요항목": ["JSON 파싱 오류"],
+                "상세분석": "LLM 응답의 JSON 형식이 올바르지 않습니다."
+            }
 
 def _call_llm(model, prompt: str) -> Dict[str, Any]:
     resp = model.generate_content(prompt)
@@ -1344,7 +1426,7 @@ def parse_report_weights(md_path: Path) -> Dict[str, float]:
 def weighted_total(final_scores: Dict[str,int], weights: Dict[str,float], evaluation_mode: str = "medical") -> float:
     if evaluation_mode == "seo":
         # SEO 모드: 실제 점수의 합계를 그대로 사용
-        return round(sum(final_scores.get(str(i), 0) for i in range(1, 10)), 1)
+        return round(sum(final_scores.get(str(i), 0) for i in range(1, 11)), 1)
     else:
         # 의료법 모드: 기존 방식 (5점 만점 기준)
         num = sum((final_scores.get(k,0)/5.0) * weights[k] for k in weights)
@@ -1419,15 +1501,15 @@ def build_eval_prompt(title: str, content: str, prompt_path: Path = EVAL_PROMPT_
         # 각 항목별 정확한 점수 계산
         def get_correct_score(item_num, value):
             if item_num == 1:  # 제목 글자수 (공백 포함)
-                if 26 <= value <= 55 : return 12
-                elif 16 <= value <= 25 or 56 <= value <= 69 : return 9
-                elif 8 <= value <= 15 or 70 <= 80 : return 6
-                else: return 3
+                if 26 <= value <= 55 : return 11
+                elif 16 <= value <= 25 or 56 <= value <= 69 : return 8
+                elif 8 <= value <= 15 or 70 <= 80 : return 5
+                else: return 2
             elif item_num == 2:  # 제목 글자수 (공백 제외)
-                if 19 <= value <= 40: return 12
-                elif 14 <= value <= 18 or 41<= value <= 50: return 9
-                elif 8 <= value <= 13 or 51 <= value <=62: return 6
-                else: return 3
+                if 19 <= value <= 40: return 11
+                elif 14 <= value <= 18 or 41<= value <= 50: return 8
+                elif 8 <= value <= 13 or 51 <= value <=62: return 5
+                else: return 2
             elif item_num == 3:  # 본문 글자수 (공백 포함)
                 if 1233 <= value <= 2628: return 15
                 elif 986 <= value <= 1232 or 2629 <= value <= 3664 : return 12
@@ -1439,30 +1521,33 @@ def build_eval_prompt(title: str, content: str, prompt_path: Path = EVAL_PROMPT_
                 elif 423 <= value <= 684 or 2635 <= value <= 3529 : return 9
                 else: return 5
             elif item_num == 5:  # 총 형태소 개수
-                if 249 <= value <= 482 : return 10
-                elif 193 <= value <= 248 or 483 <= value <= 562: return 8
-                elif  128 <= value <= 192 or 563 <= value <= 694: return 6
-                else: return 3
+                if 249 <= value <= 482 : return 7
+                elif 193 <= value <= 248 or 483 <= value <= 562: return 5
+                elif  128 <= value <= 192 or 563 <= value <= 694: return 3
+                else: return 1
             elif item_num == 6:  # 총 음절 개수
-                if 298 <= value <= 632: return 10
-                elif 214 <= value <= 297 or 633 <= value <= 825: return 8
-                elif 152 <= value <= 213 or 826 <= value <= 998: return 6
-                else: return 3
+                if 298 <= value <= 632: return 7
+                elif 214 <= value <= 297 or 633 <= value <= 825: return 5
+                elif 152 <= value <= 213 or 826 <= value <= 998: return 3
+                else: return 1
             elif item_num == 7:  # 총 단어 개수
-                if 82 <= value <= 193: return 10
-                elif 54 <= value <= 81 or 194 <= value <= 289 : return 8
-                elif 31 <= value <= 53 or 290 <= value <=412: return 6
-                else: return 3
+                if 82 <= value <= 193: return 7
+                elif 54 <= value <= 81 or 194 <= value <= 289 : return 5
+                elif 31 <= value <= 53 or 290 <= value <=412: return 3
+                else: return 1
             elif item_num == 8:  # 어뷰징 단어 개수
-                if 0 <= value <= 7: return 8
-                elif 8 <= value <= 14: return 6
-                elif 15 <= value <= 21: return 4
-                else: return 2
+                if 0 <= value <= 7: return 7
+                elif 8 <= value <= 14: return 5
+                elif 15 <= value <= 21: return 3
+                else: return 0
             elif item_num == 9:  # 본문 이미지
-                if 3 <= value <= 11: return 8
-                elif 4 <= value <= 11: return 6
-                elif 4 <= value <= 11: return 4
-                else: return 2
+                if 3 <= value <= 11: return 7
+                elif 4 <= value <= 11: return 5
+                elif 4 <= value <= 11: return 3
+                else: return 0
+            elif item_num == 10: # 백링크 존재 여부
+                if value >= 1 : return 13
+                else: return 0
             return 0
 
         metrics_text = f"""
@@ -1477,6 +1562,7 @@ def build_eval_prompt(title: str, content: str, prompt_path: Path = EVAL_PROMPT_
 7. 총 단어 개수: {seo_metrics.get(7, 0)}개 → {get_correct_score(7, seo_metrics.get(7, 0))}점
 8. 어뷰징 단어 개수: {seo_metrics.get(8, 0)}개 → {get_correct_score(8, seo_metrics.get(8, 0))}점
 9. 본문 이미지: {seo_metrics.get(9, 0)}개 → {get_correct_score(9, seo_metrics.get(9, 0))}점
+10. 백링크 존재 여부: {seo_metrics.get(10, 0)}개 → {get_correct_score(10, seo_metrics.get(10, 0))}점
 
 위의 정답 점수를 그대로 사용하세요! 다른 점수를 부여하지 마세요!"""
         base = base + metrics_text
@@ -1628,6 +1714,10 @@ def get_seo_grade_by_actual_value(actual_value: int, item_num: int) -> str:
             'C': [(4, 11), (22, 30)], 
             'D': [(0, 3), (31, 999)]
         },               # 본문 이미지
+        10: {
+            'A': [(1, 999)], 
+            'D': [(0, 0)]
+        },               # 백링크 존재 여부
     }
     
     if item_num not in grade_criteria:
@@ -1811,7 +1901,7 @@ def run_single_mode(criteria_mode: str = "표준",
     else:
         # SEO 모드에서는 규칙 기반 평가 건너뛰기
         rule_all = {}
-        weights = {str(i): 1.0 for i in range(1, 10)}  # SEO는 9개 항목
+        weights = {str(i): 1.0 for i in range(1, 11)}  # SEO는 9개 -> 10개 항목
 
     # 3) LLM 평가
     model = _setup_llm()
@@ -1826,7 +1916,7 @@ def run_single_mode(criteria_mode: str = "표준",
 
     def fuse(rule_all: Dict[str, Dict[str,Any]], llm_scores: Dict[str,int]) -> Dict[str,int]:
         fused = {}
-        max_items = 9 if evaluation_mode == "seo" else 15
+        max_items = 10 if evaluation_mode == "seo" else 15 # 9->10으로 변경
         for i in range(1,max_items + 1):
             r = int(rule_all.get(str(i),{}).get("score",0))
             l = int(llm_scores.get(str(i),0))
@@ -1899,11 +1989,11 @@ def run_single_mode(criteria_mode: str = "표준",
                                 criteria[criteria_mode].get(str(i),5), 
                                 evaluation_mode
                             )} if evaluation_mode == "seo" else {})
-                        } for i in range(1, 10 if evaluation_mode == "seo" else 16)
+                        } for i in range(1, 11 if evaluation_mode == "seo" else 16)
                     },
                     "weighted_total": weighted_total_before,
-                    "llm_total_raw": sum(int(llm_scores.get(str(i),0)) for i in range(1, 10 if evaluation_mode == "seo" else 16)),
-                    "rule_total_proxy": sum(int(rule_all.get(str(i),{}).get("score",0)) for i in range(1, 10 if evaluation_mode == "seo" else 16))
+                    "llm_total_raw": sum(int(llm_scores.get(str(i),0)) for i in range(1, 11 if evaluation_mode == "seo" else 16)),
+                    "rule_total_proxy": sum(int(rule_all.get(str(i),{}).get("score",0)) for i in range(1, 11 if evaluation_mode == "seo" else 16))
                 },
                 "violations": {
                     "over_threshold": violations_before,
@@ -2087,11 +2177,11 @@ def run_single_mode(criteria_mode: str = "표준",
                             criteria[criteria_mode].get(str(i),5), 
                             evaluation_mode
                         )} if evaluation_mode == "seo" else {})
-                    } for i in range(1, 10 if evaluation_mode == "seo" else 16)
+                    } for i in range(1, 11 if evaluation_mode == "seo" else 16)
                 },
                 "weighted_total": weighted_total_before,
-                "llm_total_raw": sum(int(llm_scores.get(str(i),0)) for i in range(1, 10 if evaluation_mode == "seo" else 16)),
-                "rule_total_proxy": sum(int(rule_all.get(str(i),{}).get("score",0)) for i in range(1, 10 if evaluation_mode == "seo" else 16))
+                "llm_total_raw": sum(int(llm_scores.get(str(i),0)) for i in range(1, 11 if evaluation_mode == "seo" else 16)),
+                "rule_total_proxy": sum(int(rule_all.get(str(i),{}).get("score",0)) for i in range(1, 11 if evaluation_mode == "seo" else 16))
             },
             "violations": {
                 "over_threshold": violations_before,
@@ -2190,11 +2280,11 @@ def run_single_mode(criteria_mode: str = "표준",
                             criteria[criteria_mode].get(str(i),5), 
                             evaluation_mode
                         )} if evaluation_mode == "seo" else {})
-                    } for i in range(1, 10 if evaluation_mode == "seo" else 16)
+                    } for i in range(1, 11 if evaluation_mode == "seo" else 16)
                 },
                 "weighted_total": weighted_total_before,
-                "llm_total_raw": sum(int(llm_scores.get(str(i),0)) for i in range(1, 10 if evaluation_mode == "seo" else 16)),
-                "rule_total_proxy": sum(int(rule_all.get(str(i),{}).get("score",0)) for i in range(1, 10 if evaluation_mode == "seo" else 16))
+                "llm_total_raw": sum(int(llm_scores.get(str(i),0)) for i in range(1, 11 if evaluation_mode == "seo" else 16)),
+                "rule_total_proxy": sum(int(rule_all.get(str(i),{}).get("score",0)) for i in range(1, 11 if evaluation_mode == "seo" else 16))
             },
             "violations": {
                 "over_threshold": violations_before,

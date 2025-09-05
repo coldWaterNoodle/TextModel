@@ -161,6 +161,57 @@ def _latest_title(mode: str) -> Optional[Path]:
     return hits[0] if hits else None
 
 # =========================
+# 하이라이트 마커 정책 (증상/진료/치료)
+# =========================
+# 증상=SYM(노랑), 진료=DNA? -> DIA(주황), 치료/주제=TRT(연두)
+SECTION_HIGHLIGHT_POLICY = {
+    "1_intro": {
+        "allow": {"TRT": (1, 1)},   # (문단당 최대, 섹션당 최대)
+        "ban":   {"SYM", "DIA"},
+        "notes": "도입은 주제/치료명만 TRT 1회. SYM/DIA 사용 금지."
+    },
+    "2_visit": {
+        "allow": {"SYM": (1, 2), "DIA": (1, 1)},
+        "ban":   {"TRT"},
+        "notes": "환자 호소 중심: SYM 1~2회, 필요 시 DIA 1회. TRT 남발 금지."
+    },
+    "3_inspection": {
+        "allow": {"DIA": (1, 2), "SYM": (1, 1)},
+        "ban":   set(),
+        "notes": "검사/판단 중심: DIA 1~2회, 보조로 SYM 1회."
+    },
+    "4_doctor_tip": {
+        "allow": {"TRT": (1, 2), "DIA": (1, 1)},
+        "ban":   set(),
+        "notes": "실천 팁 핵심은 TRT 1~2회, 근거 설명은 DIA 1회."
+    },
+    "5_treatment": {
+        "allow": {"TRT": (1, 3), "DIA": (1, 1)},
+        "ban":   set(),
+        "notes": "치료 과정/선택 이유는 TRT 2~3회, 근거는 DIA 1회."
+    },
+    "6_check_point": {
+        "allow": {"TRT": (1, 2), "DIA": (1, 1)},
+        "ban":   set(),
+        "notes": "사후관리 수칙은 TRT 1~2회, 배경 설명은 DIA 1회."
+    },
+    "7_conclusion": {
+        "allow": {"TRT": (1, 1), "DIA": (1, 1)},
+        "ban":   set(),
+        "notes": "핵심 회수: TRT 1회, 필요 시 DIA 1회."
+    },
+}
+
+# 공통 마커 사용 규칙(LLM 가드레일용 텍스트)
+MARKER_RULES_TEXT = (
+    "하이라이트 마커 규칙:\n"
+    "- 증상은 [[SYM]]..[[/SYM]] (노랑), 진료/판단은 [[DIA]]..[[/DIA]] (주황), 치료/주제는 [[TRT]]..[[/TRT]] (연두)로 감싼다.\n"
+    "- 한 구절에는 하나의 마커만. 마커 중첩 금지. 링크/이미지/숫자 나열과 겹치지 않게 순수 텍스트만 감싼다.\n"
+    "- 문단당 최대 1개. 섹션별 최대치는 섹션 정책에 따른다.\n"
+)
+
+
+# =========================
 # 프롬프트 로딩/치환
 # =========================
 PROMPTS = {
@@ -272,6 +323,70 @@ def _improve_readability(text: str) -> str:
     result = re.sub(r'\n{3,}', '\n\n', result)
     
     return result.strip()
+
+# 326라인 다음에 추가
+def _improve_readability_except_emoji(text: str) -> str:
+    """
+    섹션6용: 이모지 이후 줄바꿈을 제외한 가독성 개선
+    """
+    if not text:
+        return text
+    
+    # 1. 이스케이프된 줄바꿈 문자 정리
+    text = text.replace('\\n\\n', '\n\n')
+    text = text.replace('\\n', '\n')
+    text = text.replace('\\t', ' ')
+    
+    # 2. 쉼표(,) 뒤에 단순 줄바꿈 추가
+    text = re.sub(r'(,)(\s+)([가-힣A-Za-z0-9])', r'\1\n\3', text)
+    
+    # 3. 조건부 문장 부호 처리 (이모지 제외)
+    
+    # 3-1. "" 안의 .!? 처리 (단순 줄바꿈)
+    def quote_replacer(match):
+        quote_content = match.group(1)
+        quote_content = re.sub(r'([?!.])(\s+)([가-힣A-Za-z0-9])', r'\1\n\3', quote_content)
+        return f'"{quote_content}"'
+    
+    text = re.sub(r'"([^"]*)"', quote_replacer, text)
+    
+    # 3-2. <> 안의 내용을 임시로 보호
+    angle_brackets_content = {}
+    placeholder_counter = 0
+    
+    def preserve_angle_brackets(match):
+        nonlocal placeholder_counter
+        placeholder = f"__ANGLE_BRACKET_{placeholder_counter}__"
+        angle_brackets_content[placeholder] = match.group(0)
+        placeholder_counter += 1
+        return placeholder
+    
+    text = re.sub(r'<[^>]*>', preserve_angle_brackets, text)
+    
+    # 3-3. 일반적인 .!? 처리 (빈 줄 추가) - 이모지 패턴 제외
+    patterns = [
+        (r'([?!.])(\s+)(?!\n)([가-힣A-Za-z0-9])', r'\1\n\n\3'),  # .!? 뒤에 빈 줄 추가
+        (r'([,])(\s+)(?!\n)([가-힣A-Za-z0-9])', r'\1\n\3'),      # , 뒤에 단순 줄바꿈만
+        (r'(")(\s+)([가-힣A-Za-z0-9])', r'\1\n\n\3'),      # " 뒤에 빈 줄 추가  
+        (r"(')(\s+)([가-힣A-Za-z0-9])", r'\1\n\n\3'),      # ' 뒤에 빈 줄 추가
+        (r'(\*)(\s+)([가-힣A-Za-z0-9])', r'\1\n\n\3'),     # * 뒤에 빈 줄 추가 (이탈릭체)
+        # 이모지 패턴은 제외
+    ]
+    
+    result = text
+    for pattern, replacement in patterns:
+        result = re.sub(pattern, replacement, result)
+    
+    # 3-4. <> 내용을 다시 복원
+    for placeholder, original_content in angle_brackets_content.items():
+        result = result.replace(placeholder, original_content)
+    
+    # 4. 연속된 줄바꿈 정리 (3개 이상을 2개로)
+    result = re.sub(r'\n{3,}', '\n\n', result)
+    
+    return result.strip()
+
+# 그리고 1183-1245 라인의 잘못된 함수 정의를 모두 제거
 
 def _strip_quotes(s: str) -> str:
     s = (s or "").strip()
@@ -676,8 +791,8 @@ def _dedup_and_limit_images(section_key: str,
     - Q7은 전/후 페어링 정렬
     """
     # 0) inline 제외 (emoticon은 포함, assemble에서 무시되지만 로그 혼입 방지)
-    filtered = [im for im in images if (im.get("position") or "").lower() != "inline"]
-
+    # filtered = [im for im in images if (im.get("position") or "").lower() != "inline"]
+    filtered = images
     # 1) 전역 dedup
     unique: List[Dict[str, str]] = []
     section_processed = set()  # 섹션 내 중복 방지
@@ -843,19 +958,27 @@ def _resolve_images_for_section(plan_sec: Dict[str, Any], input_row: Dict[str, A
             # URL이 있으면 별도로도 저장
             if url:
                 entry["url"] = url
-            
-            desc = it.get("description", "")
-            if desc:  # 값이 있을 때만 추가
-                entry["alt"] = desc 
-            
+
+            # --- ALT 보강: description 없으면 다른 후보 키/파일명으로 채움 ---
+            desc = (it.get("description") or "").strip()
+            if not desc:
+                # 입력에서 흔히 쓰일 수 있는 대체 키들 순회
+                desc = (it.get("alt") or it.get("title") or it.get("label") or "").strip()
+            if not desc:
+                # 파일명 기반 폴백(확장자/언더스코어 제거)
+                base = (fn or Path(final_path).name or "").rsplit(".", 1)[0]
+                base = re.sub(r"[_\-]+", " ", base).strip()
+                desc = base or "이미지"
+
+            entry["alt"] = desc  # 항상 alt를 넣도록!
+
             # input 이미지와 content 이모티콘 gif 구분
-            if "airtableusercontent.com" in final_path and not desc:
-                # content 이모티콘 gif: 간단한 img 태그 (description이 없을 때만)
+            if "airtableusercontent.com" in final_path and not it.get("description"):
+                # description이 '없을 때만' 이모티콘으로 간주 (콘텐츠 gif)
                 entry["is_emoticon"] = True
             else:
-                # input 이미지: figure 태그로 감싸기
                 entry["is_emoticon"] = False
-            
+
             out.append(entry)
 
     return out
@@ -868,9 +991,9 @@ SECTION_TITLE_MAP = {
     "1_intro": "서론",
     "2_visit": "내원·방문",
     "3_inspection": "검사·진단",
-    "4_doctor_tip": "의료진 팁",
+    "4_doctor_tip": "⭐ 의료진 TIP ⭐",
     "5_treatment": "치료 과정",
-    "6_check_point": "체크포인트",
+    "6_check_point": "☑️ Checkpoint",
     "7_conclusion": "마무리·결과",
 }
 
@@ -915,6 +1038,16 @@ def _build_section_prompt(sec_key: str, sec_plan: Dict[str, Any], base_ctx: Dict
     prompt_txt = _read(p_path, default=f"[{sec_key}]에 대한 본문을 한국어로 작성하세요.")
     prompt_txt = _render_template(prompt_txt, base_ctx)
 
+    # 섹션별 하이라이트 정책 병합
+    policy = SECTION_HIGHLIGHT_POLICY.get(sec_key, {"allow": {}, "ban": set(), "notes": ""})
+    # 사람이 읽을 수 있는 정책 설명(LLM 유도용)
+    allow_hints = []
+    for mk, (per_paragraph, per_section) in policy.get("allow", {}).items():
+        allow_hints.append(f"{mk}: 문단당 {per_paragraph}개, 섹션당 최대 {per_section}개")
+    allow_text = ("허용 마커 — " + ", ".join(allow_hints)) if allow_hints else "허용 마커 — 없음"
+    ban_text = ("금지 마커 — " + ", ".join(sorted(policy.get("ban", [])))) if policy.get("ban") else "금지 마커 — 없음"
+    notes_text = policy.get("notes", "")
+
     guide = {
         "section_key": sec_key,
         "section_title": SECTION_TITLE_MAP.get(sec_key, sec_key),
@@ -930,14 +1063,35 @@ def _build_section_prompt(sec_key: str, sec_plan: Dict[str, Any], base_ctx: Dict
         "format_rules": [
             "불필요한 헤딩/번호 매기기 금지(프롬프트가 요구한 경우 제외).",
             "이모지는 프롬프트가 요구한 경우에만 제한적으로 사용.",
+            # ↓↓↓ 마커 공통 규칙(전 섹션 공통) ↓↓↓
+            MARKER_RULES_TEXT,
+            f"[섹션별 마커 정책] {allow_text}; {ban_text}. {notes_text}"
         ],
+        # JSON에도 남겨두면 로깅/디버깅 용이
+        "highlight_policy": {
+            "allow": policy.get("allow", {}),
+            "ban": list(policy.get("ban", [])),
+            "notes": notes_text
+        }
     }
+
+    # 시스템 지시 강화: 마커 사용을 강하게 요구
     sys_dir = (
       "You are a Korean medical blog writer. Follow all rules. "
-      "Return PLAIN TEXT only (no JSON, no backticks)."
+      "Return PLAIN TEXT only (no JSON, no backticks). "
+      "If a highlight-worthy phrase appears, wrap it with the correct marker: "
+      "[[SYM]]..[[/SYM]], [[DIA]]..[[/DIA]], [[TRT]]..[[/TRT]] according to the section policy."
     )
-    final = f"{sys_dir}\n\nINSTRUCTION\n{prompt_txt}\n\nCONTEXT(JSON)\n{json.dumps(base_ctx, ensure_ascii=False, indent=2)}\n\nSECTION_GUIDE(JSON)\n{json.dumps(guide, ensure_ascii=False, indent=2)}\n\nWrite the section now:"
+
+    final = (
+        f"{sys_dir}\n\n"
+        f"INSTRUCTION\n{prompt_txt}\n\n"
+        f"CONTEXT(JSON)\n{json.dumps(base_ctx, ensure_ascii=False, indent=2)}\n\n"
+        f"SECTION_GUIDE(JSON)\n{json.dumps(guide, ensure_ascii=False, indent=2)}\n\n"
+        f"Write the section now:"
+    )
     return final
+
 
 # =========================
 # 본문 조립
@@ -1085,7 +1239,11 @@ def run(mode: str = DEF_MODE,
         # ✅ 통합 함수로 URL을 <img> 태그로 변환
         text, emoticon_imgs = _convert_urls_to_img_tags(text, k, use_airtable, ui_mode)
         # ✅ 가독성 개선을 나중에 적용 (이미지 태그 보호)
-        text = _improve_readability(text)
+        if k == "6_check_point":
+            # 섹션6에서는 이모지 이후 줄바꿈 제외
+            text = _improve_readability_except_emoji(text)
+        else:
+            text = _improve_readability(text)
 
         # 후보 이미지 수집
         images = _resolve_images_for_section(sec_plan, inp_row, use_airtable, ui_mode)
@@ -1164,19 +1322,25 @@ def run(mode: str = DEF_MODE,
             api = Api(os.getenv('AIRTABLE_API_KEY'))
             posts_table = api.table(os.getenv('AIRTABLE_BASE_ID'), 'Medicontent Posts')
             
-            # Post Id로 레코드 찾기
-            post_id = _get(inp_row, "postId", "") or _get(inp_row, "Post Id", "")
-            if post_id:
-                records = posts_table.all(formula=f"{{Post Id}} = '{post_id}'")
-                if records:
-                    record_id = records[0]['id']
-                    # HTML ID는 content JSON 파일명(stem)으로 설정
-                    posts_table.update(record_id, {'HTML ID': out_path.stem})
-                    print(f"✅ Airtable HTML ID 업데이트 완료 (Post Id 매칭): {out_path.stem}")
-                else:
-                    print(f"⚠️ Post Id로 레코드를 찾을 수 없음: {post_id}")
+            # medicontentRecordId 우선 사용, 없으면 Post Id로 폴백
+            medicontent_record_id = _get(inp_row, "medicontentRecordId", "")
+            if medicontent_record_id:
+                # record ID로 직접 조회 (가장 빠름)
+                posts_table.update(medicontent_record_id, {'HTML ID': out_path.stem})
+                print(f"✅ Airtable HTML ID 업데이트 완료 (Record ID 직접): {out_path.stem}")
             else:
-                print(f"⚠️ Post Id가 없어 HTML ID 업데이트를 건너뜀")
+                # 폴백: Post Id로 조회
+                post_id = _get(inp_row, "postId", "") or _get(inp_row, "Post Id", "")
+                if post_id:
+                    records = posts_table.all(formula=f"OR({{Post Id}} = '{post_id}', {{Post ID}} = '{post_id}')")
+                    if records:
+                        record_id = records[0]['id']
+                        posts_table.update(record_id, {'HTML ID': out_path.stem})
+                        print(f"✅ Airtable HTML ID 업데이트 완료 (Post Id 매칭): {out_path.stem}")
+                    else:
+                        print(f"⚠️ Post Id로 레코드를 찾을 수 없음: {post_id}")
+                else:
+                    print(f"⚠️ Post Id가 없어 HTML ID 업데이트를 건너뜀")
                 
         except Exception as e:
             print(f"⚠️ Airtable HTML ID 업데이트 실패: {e}")

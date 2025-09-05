@@ -41,6 +41,10 @@ class BlogHTMLConverter:
         .footer-notice {{ background: #f8f9fa; padding: 15px; border-radius: 5px; margin-top: 30px; font-size: 0.9em; }}
         .hashtags {{ margin-top: 20px; }}
         .hashtags a {{ color: #3498db; text-decoration: none; margin-right: 10px; }}
+        /* highlight 전용 클래스 */
+        .hl-sym {{ background-color: #fff59d; font-weight: 600; }}   /* 노랑: 증상 */
+        .hl-dia {{ background-color: #ffcc80; font-weight: 500; }}   /* 주황: 진단 */
+        .hl-trt {{ background-color: #c8e6c9; font-weight: 600; }}   /* 연두: 치료/주제 */        
     </style>
 </head>
 <body>
@@ -164,19 +168,33 @@ class BlogHTMLConverter:
         return datetime.now().strftime("%Y. %m. %d. %H:%M")
     
     def _build_intro_section(self, data: Dict, react_mode: bool = False) -> str:
-        """인트로 섹션 생성"""
+        """인트로 섹션 생성 (텍스트 + 이미지 포함)"""
         css_class = "className" if react_mode else "class"
-        intro_html = f'<div {css_class}="intro">'
-        
-        # sections에서 intro 찾기
+        intro_html_parts = [f'<div {css_class}="intro">']
+
         if 'sections' in data:
-            intro_section = data['sections'].get('1_intro')
-            if intro_section and 'text' in intro_section:
-                intro_text = self._markdown_to_html_simple(intro_section['text'], react_mode)
-                intro_html += f"<p>{intro_text}</p>"
-        
-        intro_html += "</div>"
-        return intro_html
+            intro_section = data['sections'].get('1_intro') or {}
+            # 1) 텍스트 (이미 _markdown_to_html_simple에서 마커 치환/줄바꿈 처리함)
+            text = intro_section.get('text', '')
+            if text:
+                # _markdown_to_html_simple은 이미 <p>로 래핑하므로 중복 <p> 금지
+                intro_html_parts.append(self._markdown_to_html_simple(text, react_mode))
+
+            # 2) 이미지 (이모티콘 GIF 포함)
+            images = intro_section.get('images') or []
+            if images:
+                # 안전하게 1개만 보여주고 싶으면 아래 주석 해제
+                # 이모티콘 우선 1개 선택 로직 (옵션)
+                # emoticons = [img for img in images if img.get('position') == 'emoticon' or img.get('is_emoticon')]
+                # images_to_render = emoticons[:1] if emoticons else images[:1]
+                # intro_html_parts.append(self._build_images_html(images_to_render, react_mode))
+
+                # 여러 개 허용 시 그냥 전부 렌더
+                intro_html_parts.append(self._build_images_html(images, react_mode))
+
+        intro_html_parts.append("</div>")
+        return ''.join(intro_html_parts)
+
     
     def _build_sections_html(self, data: Dict, react_mode: bool = False) -> str:
         """섹션들을 HTML로 변환"""
@@ -299,7 +317,7 @@ class BlogHTMLConverter:
         '''
     
     def _markdown_to_html_simple(self, text: str, react_mode: bool = False) -> str:
-        """간단한 마크다운 → HTML 변환 (113259 방식으로 통일)"""
+        """마크다운 → HTML 변환 (113259 방식으로 통일)"""
         if not text:
             return ""
 
@@ -340,6 +358,11 @@ class BlogHTMLConverter:
         
         # 6-3. </em> 뒤에 <br><br> 추가 (이탈릭체 뒤 빈 줄)
         text = re.sub(r'(</em>)<br>([가-힣A-Za-z0-9])', r'\1<br><br>\2', text)
+        # 마커 치환: [[SYM]]..[[/SYM]] → span.hl-sym
+        text = re.sub(r'\[\[SYM\]\](.*?)\[\[/SYM\]\]', r'<span class="hl-sym">\1</span>', text, flags=re.DOTALL)
+        text = re.sub(r'\[\[DIA\]\](.*?)\[\[/DIA\]\]', r'<span class="hl-dia">\1</span>', text, flags=re.DOTALL)
+        text = re.sub(r'\[\[TRT\]\](.*?)\[\[/TRT\]\]', r'<span class="hl-trt">\1</span>', text, flags=re.DOTALL)
+
         
         return f'<p>{text}</p>'
 

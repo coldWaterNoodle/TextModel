@@ -1,6 +1,32 @@
 import { NextRequest, NextResponse } from 'next/server';
 import AirtableService from '@/services/airtable';
 
+// 상단 공통 유틸로 추가
+const ALLOWED_MODES = new Set(['input-only', 'half-agents', 'all-agents']);
+const N8N_WEBHOOK_URL = process.env.N8N_WEBHOOK_URL || 'https://medisales-u45006.vm.elestio.app/webhook-test/airtable-image-trigger';
+
+function normalizeMode(v?: string | null): 'input-only' | 'half-agents' | 'all-agents' {
+  if (!v) return 'all-agents'; // 웹훅 기본 모드: 전체 파이프라인 실행 (input-only 단계는 주석 처리됨)
+  const val = String(v).trim().toLowerCase()
+    .replace(/_/g, '-')         // half_agents → half-agents
+    .replace(/halfagents/, 'half-agents')
+    .replace(/^input$/, 'input-only')
+    .replace(/^inputonly$/, 'input-only');
+  return (ALLOWED_MODES.has(val) ? (val as any) : 'all-agents');
+}
+
+function resolveModeFromRequest(req: NextRequest, body?: any) {
+  // 1) 우선순위: body.mode > query ?mode= > header x-mc-mode
+  const url = new URL(req.url);
+  const fromBody = body?.mode ?? null;
+  const fromQuery = url.searchParams.get('mode');
+  const fromHeader = req.headers.get('x-mc-mode');
+  const picked = fromBody ?? fromQuery ?? fromHeader ?? null;
+  const finalMode = normalizeMode(picked);
+  console.log('🎛️ 모드 결정:', { fromBody, fromQuery, fromHeader, finalMode });
+  return finalMode;
+}
+
 // 이미지 설명을 각 이미지별로 분리하는 함수
 function splitImageDescriptions(descriptionsText: string, imageCount: number): string[] {
     console.log('🔍 splitImageDescriptions 입력:', { descriptionsText, imageCount });
@@ -47,7 +73,7 @@ function splitImageDescriptions(descriptionsText: string, imageCount: number): s
 // mode: 'input-only' = 테스트용 - input 에이전트만 실행 (로그 저장만)
 // mode: 'half-agents' = 테스트용 - plan→title→content→evaluation 실행
 // mode: 'all-agents' = 실사용 - 전체 워크플로우 (input→plan→title→content→evaluation)
-async function sendToFastAPI(data: any, isUpdate: boolean = false, mode: 'input-only' | 'half-agents' | 'all-agents' = 'all-agents') {
+async function sendToFastAPI(data: any, isUpdate: boolean = false, mode: 'input-only' | 'half-agents' | 'all-agents' = 'input-only') {
     try {
         console.log('🚀 sendToMedicontentGenerate 시작:', { postId: data.postId, isUpdate });
         
@@ -377,18 +403,14 @@ async function sendToFastAPI(data: any, isUpdate: boolean = false, mode: 'input-
                 target_log_path: data.targetLogPath || null   // 직접 로그 파일 경로 지정
             };
         } else {
-            // 🔄 테스트용: Input 에이전트만 /api/input-agent  
+            // 🔄 Input 에이전트만 /api/input-agent  (로그만 생성, 에이전트 미실행)
             endpoint = `${fastApiUrl}/api/input-agent`;
             console.log('🚀 FastAPI 호출 시작 (테스트용 - input 전용):', endpoint);
             
-            // input_data로 래핑
+            // ✅ 에이전트 "실행 없음": 백엔드가 input 로그만 저장하도록 옵션 최소화
             requestData = {
                 input_data: inputAgentData,
-                options: {
-                    async: false,
-                    steps: ["plan", "title", "content", "evaluate"],
-                    evaluation_mode: "medical"
-                }
+                options: { async: false }
             };
         }
         
@@ -471,6 +493,9 @@ export async function POST(request: NextRequest) {
         console.log('✅ Airtable 연결 상태 확인 완료');
         const body = await request.json();
         console.log('📋 POST 요청 데이터:', body);
+        
+        // ↓↓↓ 여기서 최종 모드 확정 (body/쿼리/헤더 모두 허용)
+        const finalMode = resolveModeFromRequest(request, body);
         console.log('🔍 이미지 데이터 확인:', {
             beforeImages: body.beforeImages,
             processImages: body.processImages,
@@ -525,7 +550,7 @@ export async function POST(request: NextRequest) {
         
         // 1.2. 실제 저장된 Post Data Requests의 Post ID들 추출
         const actualPostDataRequestPostId = createdDataRequest.get('Post ID'); // record ID (recXXXXX)
-        let actualPostDataRequestPostIdFull = createdDataRequest.get('Post Id'); // full ID (post_recXXXXX) - 동기화를 위해 let 사용
+        let actualPostDataRequestPostIdFull = (createdDataRequest.get('Post Id') as string) || (createdDataRequest.get('Post ID') as string);
         console.log('🔍 실제 저장된 Post Data Requests Post ID (record):', actualPostDataRequestPostId);
         console.log('🔍 실제 저장된 Post Data Requests Post Id (full):', actualPostDataRequestPostIdFull);
 
@@ -581,7 +606,7 @@ export async function POST(request: NextRequest) {
             savedDataRequest: createdDataRequest,
             
             // ✨ UI에서 전달받을 수 있는 추가 옵션들
-            mode: body.mode || null,                    // 실행 모드 선택
+            mode: finalMode,                            // 서버가 확정한 최종 모드
             targetCaseId: body.targetCaseId || null,    // 특정 case_id 지정
             targetPostId: body.targetPostId || null,    // 특정 postId 지정
             targetDate: body.targetDate || null,        // 특정 날짜 지정
@@ -589,24 +614,55 @@ export async function POST(request: NextRequest) {
         };
         
         try {
-            // 🔧 1단계: 먼저 input-only로 로그 생성
-            console.log(`🎯 1단계: input-only 모드로 입력 로그 생성`);
-            const inputResult = await sendToFastAPI(dataWithRealPostIds, false, 'input-only');
-            console.log(`✅ FastAPI input-only 모드 완료`);
+            // 이미 위에서 계산한 finalMode를 사용 (재선언 제거)
             
-            // 🔧 2단계: all-agents로 전체 파이프라인 실행 (입력 로그 기반)
-            const mode = dataWithRealPostIds.mode || 'all-agents';
-            if (mode !== 'input-only') {
-                console.log(`🎯 2단계: ${mode} 모드로 전체 파이프라인 실행`);
-                const fastApiResult = await sendToFastAPI(dataWithRealPostIds, false, mode);
-                console.log(`✅ FastAPI ${mode} 모드 완료`);
+            // 1) 항상 웹훅 호출부터 시작 (실패해도 다음 단계 진행)
+            try {
+                console.log(' n8n 웹훅 호출 시작');
+                console.log('📤 n8n에 전송할 데이터:', JSON.stringify(dataWithRealPostIds, null, 2));
+                
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => {
+                    console.log('⏰ n8n 웹훅 15초 타임아웃 발생');
+                    controller.abort();
+                }, 15000);
+                
+                const startTime = Date.now();
+                const response = await fetch(N8N_WEBHOOK_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(dataWithRealPostIds),
+                    signal: controller.signal
+                });
+                
+                const endTime = Date.now();
+                clearTimeout(timeoutId);
+                
+                console.log(`✅ n8n 웹훅 호출 완료 - 응답시간: ${endTime - startTime}ms`);
+                console.log('📥 n8n 응답 상태:', response.status, response.statusText);
+            } catch (error) {
+                console.error('❌ n8n 웹훅 호출 실패:', error);
+                console.error('❌ n8n 에러 타입:', (error as Error).name);
+                console.error('❌ n8n 에러 메시지:', (error as Error).message);
+            }        
+            
+            // 2) input-only 단계 (주석 처리)
+            // console.log(`🎯 2단계: input-only 모드로 입력 로그 생성`);
+            // const inputResult = await sendToFastAPI(dataWithRealPostIds, false, 'input-only');
+            // console.log(`✅ FastAPI input-only 모드 완료`);
+            
+            // 3) 최종 단계: finalMode가 'input-only'가 아닌 경우에만 실행
+            if (finalMode !== 'input-only') {
+                console.log(`🎯 3단계: ${finalMode} 모드로 전체 파이프라인 실행`);
+                const fastApiResult = await sendToFastAPI(dataWithRealPostIds, false, finalMode);
+                console.log(`✅ FastAPI ${finalMode} 모드 완료`);
             }
             
             return NextResponse.json({ 
                 message: '자료 요청이 제출되었습니다.',
                 airtable: '저장 완료',
-                medicontent: `input-only → ${mode} 단계별 파이프라인 완료`,
-                fastapi: `input-only + ${mode} 모드 실행 완료`
+                medicontent: `input-only → ${finalMode} 단계별 파이프라인 완료`,
+                fastapi: `input-only + ${finalMode} 모드 실행 완료`
             });
         } catch (fastApiError) {
             // FastAPI 전송 실패해도 Airtable은 저장된 상태이므로 부분 성공으로 처리
@@ -677,6 +733,9 @@ export async function PUT(request: NextRequest) {
         console.log('✅ Airtable 연결 상태 확인 완료');
         const body = await request.json();
         console.log('📋 PUT 요청 데이터:', body);
+        
+        // ↓↓↓ 여기서 최종 모드 확정 (body/쿼리/헤더 모두 허용)
+        const finalMode = resolveModeFromRequest(request, body);
         console.log('🔍 PUT 이미지 데이터 확인:', {
             beforeImages: body.beforeImages,
             processImages: body.processImages,
@@ -733,7 +792,7 @@ export async function PUT(request: NextRequest) {
         // 1.2. 업데이트된 Post Data Requests 레코드 조회하여 실제 Post ID들 가져오기
         const updatedDataRequestRecord = await AirtableService.getDataRequestRecord(id);
         const actualPostDataRequestPostId = updatedDataRequestRecord.get('Post ID') as string; // record ID (recXXXXX)
-        let actualPostDataRequestPostIdFull = updatedDataRequestRecord.get('Post Id') as string; // full ID (post_recXXXXX) - 동기화를 위해 let 사용
+        let actualPostDataRequestPostIdFull = (updatedDataRequestRecord.get('Post Id') as string) || (updatedDataRequestRecord.get('Post ID') as string);
         console.log('🔍 업데이트된 Post Data Requests Post ID (record):', actualPostDataRequestPostId);
         console.log('🔍 업데이트된 Post Data Requests Post Id (full):', actualPostDataRequestPostIdFull);
 
@@ -786,32 +845,63 @@ export async function PUT(request: NextRequest) {
             actualMedicontentRecordId, // Medicontent Posts의 record ID
             
             // ✨ UI에서 전달받을 수 있는 추가 옵션들 (PUT)
-            mode: body.mode || null,                    // 실행 모드 선택
+            mode: finalMode,                            // 서버가 확정한 최종 모드
             targetCaseId: body.targetCaseId || null,    // 특정 case_id 지정
             targetPostId: body.targetPostId || null,    // 특정 postId 지정
             targetDate: body.targetDate || null,        // 특정 날짜 지정
             targetLogPath: body.targetLogPath || null   // 직접 로그 파일 경로 지정
         };
         
-        try {
-            // 🔧 1단계: 먼저 input-only로 로그 생성 (PUT)
-            console.log(`🎯 1단계: input-only 모드로 입력 로그 생성 (PUT)`);
-            const inputResult = await sendToFastAPI(dataWithRealPostIds, true, 'input-only'); // 업데이트 모드
-            console.log(`✅ FastAPI input-only 모드 완료 (PUT)`);
+        try {        
+            // 이미 위에서 계산한 finalMode를 사용 (재선언 제거)
             
-            // 🔧 2단계: all-agents로 전체 파이프라인 실행 (입력 로그 기반)
-            const mode = dataWithRealPostIds.mode || 'all-agents';
-            if (mode !== 'input-only') {
-                console.log(`🎯 2단계: ${mode} 모드로 전체 파이프라인 실행 (PUT)`);
-                const fastApiResult = await sendToFastAPI(dataWithRealPostIds, true, mode); // 업데이트 모드
-                console.log(`✅ FastAPI ${mode} 모드 완료 (PUT)`);
+            // 1) 항상 웹훅 호출부터 시작 (실패해도 다음 단계 진행)
+            try {
+                console.log(' n8n 웹훅 호출 시작 (PUT)');
+                console.log('📤 n8n에 전송할 데이터:', JSON.stringify(dataWithRealPostIds, null, 2));
+                
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => {
+                    console.log('⏰ n8n 웹훅 15초 타임아웃 발생 (PUT)');
+                    controller.abort();
+                }, 15000);
+                
+                const startTime = Date.now();
+                const response = await fetch(N8N_WEBHOOK_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(dataWithRealPostIds),
+                    signal: controller.signal
+                });
+                
+                const endTime = Date.now();
+                clearTimeout(timeoutId);
+                
+                console.log(`✅ n8n 웹훅 호출 완료 (PUT) - 응답시간: ${endTime - startTime}ms`);
+                console.log('📥 n8n 응답 상태:', response.status, response.statusText);
+            } catch (error) {
+                console.error('❌ n8n 웹훅 호출 실패 (PUT):', error);
+                console.error('❌ n8n 에러 타입:', (error as Error).name);
+                console.error('❌ n8n 에러 메시지:', (error as Error).message);
+            }                   
+            
+            // 2) input-only 단계 (주석 처리)
+            // console.log(`🎯 2단계: input-only 모드로 입력 로그 생성 (PUT)`);
+            // const inputResult = await sendToFastAPI(dataWithRealPostIds, true, 'input-only'); // 업데이트 모드
+            // console.log(`✅ FastAPI input-only 모드 완료 (PUT)`);
+            
+            // 3) 최종 단계: finalMode가 'input-only'가 아닌 경우에만 실행
+            if (finalMode !== 'input-only') {
+                console.log(`🎯 3단계: ${finalMode} 모드로 전체 파이프라인 실행 (PUT)`);
+                const fastApiResult = await sendToFastAPI(dataWithRealPostIds, true, finalMode); // 업데이트 모드
+                console.log(`✅ FastAPI ${finalMode} 모드 완료 (PUT)`);
             }
             
             return NextResponse.json({ 
                 message: '자료 요청이 업데이트되었습니다.',
                 airtable: '업데이트 완료',
-                medicontent: `input-only → ${mode} 단계별 파이프라인 완료`,
-                fastapi: `input-only + ${mode} 모드 실행 완료`
+                medicontent: `input-only → ${finalMode} 단계별 파이프라인 완료`,
+                fastapi: `input-only + ${finalMode} 모드 실행 완료`
             });
         } catch (fastApiError) {
             console.warn('⚠️ FastAPI 업데이트 실패, Airtable만 업데이트됨:', fastApiError);

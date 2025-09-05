@@ -620,7 +620,8 @@ export class AirtableService {
             const records = await base('Medicontent Posts').select().all();
                     return records.map(record => ({
             id: record.id,
-            postId: record.get('Post Id') as string,
+            // 수정 중 0905
+            postId: (record.get('Post Id') as string) || (record.get('Post ID') as string),
             title: record.get('Title') as string,
             type: record.get('Type') as '유입 포스팅' | '전환 포스팅',
             status: record.get('Status') as any,
@@ -645,7 +646,7 @@ export class AirtableService {
             const record = await base('Medicontent Posts').find(id);
             return {
                 id: record.id,
-                postId: record.get('Post Id') as string,
+                postId: (record.get('Post Id') as string) || (record.get('Post ID') as string),
                 title: record.get('Title') as string,
                 type: record.get('Type') as '유입 포스팅' | '전환 포스팅',
                 status: record.get('Status') as any,
@@ -669,7 +670,7 @@ export class AirtableService {
         try {
             const records = await base('Medicontent Posts')
                 .select({
-                    filterByFormula: `{Post Id} = '${postId}'`,
+                    filterByFormula: `OR({Post Id} = '${postId}', {Post ID} = '${postId}')`,
                     maxRecords: 1,
                 })
                 .all();
@@ -681,7 +682,7 @@ export class AirtableService {
             const record = records[0];
             return {
                 id: record.id,
-                postId: record.get('Post Id') as string,
+                postId: (record.get('Post Id') as string) || (record.get('Post ID') as string),
                 title: record.get('Title') as string,
                 type: record.get('Type') as '유입 포스팅' | '전환 포스팅',
                 status: record.get('Status') as any,
@@ -800,7 +801,7 @@ export class AirtableService {
         try {
             const records = await base('Post Data Requests')
                 .select({
-                    filterByFormula: `{Post Id} = '${postId}'`,
+                    filterByFormula: `OR({Post Id} = '${postId}', {Post ID} = '${postId}')`,
                     maxRecords: 1,
                 })
                 .all();
@@ -922,6 +923,7 @@ export class AirtableService {
                 console.log('📝 새 레코드 생성 중...');
                 const newRecord = await base('Post Data Requests').create({
                     'Post ID': postId, // Medicontent Posts의 Post Id와 동일한 값
+                    'Post Id': postId, // Post Id 필드도 동일한 값으로 추가
                     'Status': '대기',
                 });
                 console.log('✅ 새 레코드 생성됨:', newRecord.id);
@@ -963,6 +965,7 @@ export class AirtableService {
 
             const recordData: any = {
                 'Post ID': data.postId, // Medicontent Posts의 Post Id와 동일한 값
+                'Post Id': data.postId, // Post Id 필드도 동일한 값으로 추가
                 'Concept Message': data.conceptMessage,
                 'Patient Condition': data.patientCondition,
                 'Treatment Process Message': data.treatmentProcessMessage,
@@ -1091,7 +1094,8 @@ export class AirtableService {
     static async updateDataRequestPostId(id: string, postId: string): Promise<void> {
         try {
             await base('Post Data Requests').update(id, {
-                'Post ID': postId
+                'Post ID': postId,
+                'Post Id': postId  // Post Id 필드도 동일한 값으로 업데이트
             });
             console.log('✅ Post Data Requests Post Id 업데이트 성공:', postId);
         } catch (error) {
